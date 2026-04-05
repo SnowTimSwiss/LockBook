@@ -911,15 +911,14 @@ function renderEmojiGrid(filter = "") {
     const filtered = category.emojis.filter(
       (e) =>
         !lowerFilter ||
-        e.name.toLowerCase().includes(lowerFilter) ||
-        e.tags.some((t) => t.includes(lowerFilter))
+        e.n.toLowerCase().includes(lowerFilter)
     );
 
     if (filtered.length === 0) return;
 
-    html += `<div class="emoji-cat-label" style="padding:4px 0;font-size:11px;color:var(--text-muted);grid-column:1/-1">${category.label}</div>`;
+    html += `<div class="emoji-cat-label" style="padding:4px 0;font-size:11px;color:var(--text-muted);grid-column:1/-1">${category.category}</div>`;
     filtered.forEach((e) => {
-      html += `<button class="ep-emoji" title="${escapeHtml(e.name)}" data-char="${e.char}">${e.char}</button>`;
+      html += `<button class="ep-emoji" title="${escapeHtml(e.n)}" data-char="${e.e}">${e.e}</button>`;
     });
   });
 
