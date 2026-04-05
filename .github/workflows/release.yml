@@ -4,6 +4,9 @@ on:
   release:
     types: [published] # fires on both release and pre-release
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
