@@ -1,0 +1,60 @@
+{
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devPath": "../dist",
+    "distDir": "../dist",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "Lockbook",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": { "all": false, "open": true, "execute": false },
+      "dialog": { "all": false, "open": true, "save": true },
+      "fs": {
+        "all": true,
+        "scope": ["$APPDATA/**", "$DOCUMENT/**", "$DESKTOP/**", "$DOWNLOAD/**", "$HOME/**"]
+      },
+      "path": { "all": true }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "io.lockbook.app",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "resources": [],
+      "externalBin": [],
+      "copyright": "GPL-3.0",
+      "category": "Productivity",
+      "shortDescription": "Encrypted personal journal powered by TimENC",
+      "longDescription": "Lockbook is a secure encrypted diary that uses TimENC (ChaCha20-Poly1305 + Argon2id) to protect your entries."
+    },
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "Lockbook",
+        "width": 1200,
+        "height": 750,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "decorations": true
+      }
+    ],
+    "systemTray": null
+  }
+}

@@ -1,0 +1,89 @@
+# ═══════════════════════════════════════════════════════════
+#  Lockbook .gitignore
+# ═══════════════════════════════════════════════════════════
+
+# ── Rust / Cargo ──────────────────────────────────────────
+src-tauri/target/
+*.rs.bk
+*.pdb
+*.ilk
+
+# ── Node ──────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Tauri build artefacts ────────────────────────────────
+src-tauri/WixTools/
+src-tauri/gen/
+src-tauri/target/release/bundle/
+*.msi
+*.exe
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.app/
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+desktop.ini
+*.lnk
+
+# ── Editor / IDE ──────────────────────────────────────────
+.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.idea/
+*.swp
+*.swo
+*~
+.project
+*.sublime-*
+
+# ── Shell / Env ───────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Secrets & Journals (NEVER commit) ────────────────────
+*.timenc-journal
+*.timenc
+*.key
+*.pem
+*.p12
+secrets/
+credentials/
+
+# ── Temp / Backup ─────────────────────────────────────────
+*.tmp
+*.bak
+*.cache
+*.orig
+
+# ── Python (for icon generation scripts) ─────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# gen-icons.py is a helper, not needed in repo
+gen-icons.py
