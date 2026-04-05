@@ -138,7 +138,10 @@
       "Bash(curl *)",
       "Bash(git init)",
       "Bash(git checkout *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git push *)"
     ]
   },
   "$version": 3
