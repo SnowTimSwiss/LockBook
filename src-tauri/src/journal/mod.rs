@@ -8,6 +8,7 @@ pub use entry::JournalEntry;
 use crate::error::{JournalError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JournalMetadata {
     pub created: DateTime<Utc>,
     pub modified: DateTime<Utc>,
@@ -28,6 +29,7 @@ impl Default for JournalMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JournalData {
     pub version: String,
     pub entries: Vec<JournalEntry>,

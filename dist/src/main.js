@@ -9,6 +9,8 @@ let activeEntryId = null;
 let autoSaveTimer = null;
 let recentJournals = [];
 let isDirty = false;
+let savePromise = null;
+let dirtyRevision = 0;
 
 // ── DOM refs ──
 const $ = (sel) => document.querySelector(sel);
@@ -117,16 +119,25 @@ function renderRecentJournals() {
         <span class="ri-name" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</span>
         <span class="ri-date">${formatDate(r.opened)}</span>
       </div>
-      <button class="ri-remove" onclick="event.stopPropagation();removeFromRecent('${escapeJs(
-        r.path
-      )}');renderRecentJournals();" title="Remove">✕</button>
+      <button class="ri-remove" data-path="${escapeHtml(r.path)}" title="Remove">✕</button>
     </div>`
       )
       .join("")}`;
 
+  container.querySelectorAll(".ri-remove").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const path = button.dataset.path;
+      if (!path) return;
+      removeFromRecent(path);
+    });
+  });
+
   // Bind clicks on recent items
   container.querySelectorAll(".recent-item").forEach((item) => {
-    item.addEventListener("click", () => {
+    item.addEventListener("click", (event) => {
+      if (event.target.closest(".ri-remove")) return;
       const path = item.dataset.path;
       if (path) openRecentJournal(path);
     });
@@ -450,6 +461,9 @@ function bindJournalUI() {
 }
 
 function enterJournalUI() {
+  // Normalize journal data to ensure all entries have required fields
+  normalizeJournalData();
+
   showScreen("journal-ui");
   renderEntryList();
   updateMetadata();
@@ -531,6 +545,7 @@ function createNewEntry() {
     content: "",
     tags: [],
     mood: "neutral",
+    attachments: [],
   };
 
   currentJournal.entries.push(entry);
@@ -598,6 +613,9 @@ function removeTag(tag) {
   renderTags();
   markDirty();
 }
+
+// Make it globally accessible for inline onclick handlers
+window.removeTag = removeTag;
 
 function renderTags() {
   const container = $id("tags-row");
@@ -673,10 +691,12 @@ function updateMetadata() {
 // ── Dirty state ──
 function markDirty() {
   isDirty = true;
+  dirtyRevision += 1;
   const dot = $id("status-dot");
   if (dot) dot.classList.add("unsaved");
   const statusText = $id("status-text");
   if (statusText) statusText.textContent = "Unsaved changes";
+  scheduleAutoSave();
 }
 
 function clearDirty() {
@@ -704,11 +724,20 @@ function scheduleAutoSave() {
 }
 
 async function doAutoSave() {
+  return persistJournal({
+    successMessage: "Auto-saved ✓",
+    successDuration: 2000,
+    errorPrefix: "⚠ Auto-save failed: ",
+    skipIfClean: true,
+  });
   if (!currentJournal || !currentFilePath || !currentPassword) return;
 
   // Sync active entry from editor
   syncActiveEntry();
   currentJournal.metadata.modified = new Date().toISOString();
+
+  // Ensure all required fields exist
+  normalizeJournalData();
 
   try {
     await window.__TAURI__.invoke("save_journal", {
@@ -734,12 +763,126 @@ function syncActiveEntry() {
   entry.mood = $id("mood-select")?.value || "neutral";
 }
 
+function normalizeMoodValue(mood) {
+  const validMoods = ["happy", "neutral", "sad", "angry", "anxious"];
+  if (typeof mood !== "string") return "neutral";
+  const normalized = mood.toLowerCase();
+  return validMoods.includes(normalized) ? normalized : "neutral";
+}
+
+function normalizeEntryData(entry) {
+  const safeEntry = entry && typeof entry === "object" ? entry : {};
+  return {
+    id: typeof safeEntry.id === "string" && safeEntry.id ? safeEntry.id : crypto.randomUUID(),
+    timestamp: safeEntry.timestamp || new Date().toISOString(),
+    title: typeof safeEntry.title === "string" ? safeEntry.title : "",
+    content: typeof safeEntry.content === "string" ? safeEntry.content : "",
+    tags: Array.isArray(safeEntry.tags) ? safeEntry.tags.filter((tag) => typeof tag === "string") : [],
+    mood: normalizeMoodValue(safeEntry.mood),
+    attachments: Array.isArray(safeEntry.attachments)
+      ? safeEntry.attachments.filter((attachment) => typeof attachment === "string")
+      : [],
+  };
+}
+
+// Ensure all entries have required fields (for compatibility with Rust backend)
+function normalizeJournalData() {
+  if (!currentJournal || typeof currentJournal !== "object") return null;
+
+  const nowIso = new Date().toISOString();
+
+  if (!Array.isArray(currentJournal.entries)) {
+    currentJournal.entries = [];
+  }
+  currentJournal.entries = currentJournal.entries.map((entry) => normalizeEntryData(entry));
+
+  if (!currentJournal.metadata || typeof currentJournal.metadata !== "object") {
+    currentJournal.metadata = {};
+  }
+
+  if (!currentJournal.metadata.created) currentJournal.metadata.created = nowIso;
+  if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
+  if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
+  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.0.1";
+  if (!currentJournal.version) currentJournal.version = "1.0";
+
+  return currentJournal;
+}
+
+function buildJournalPayload() {
+  const journal = normalizeJournalData();
+  if (!journal) return null;
+  return JSON.parse(JSON.stringify(journal));
+}
+
+async function persistJournal({
+  successMessage = null,
+  successDuration = 3000,
+  errorPrefix = "⚠ Speichern fehlgeschlagen: ",
+  skipIfClean = false,
+} = {}) {
+  if (!currentJournal || !currentFilePath || !currentPassword) return false;
+  if (skipIfClean && !isDirty) return true;
+
+  if (savePromise) {
+    const result = await savePromise;
+    if (result && isDirty) {
+      return persistJournal({ successMessage, successDuration, errorPrefix, skipIfClean });
+    }
+    return result;
+  }
+
+  syncActiveEntry();
+  normalizeJournalData();
+  currentJournal.metadata.modified = new Date().toISOString();
+
+  const payload = buildJournalPayload();
+  if (!payload) return false;
+
+  const revisionAtStart = dirtyRevision;
+
+  savePromise = (async () => {
+    try {
+      await window.__TAURI__.invoke("save_journal", {
+        path: currentFilePath,
+        password: currentPassword,
+        keyfile: currentKeyfile || null,
+        data: payload,
+      });
+
+      if (dirtyRevision === revisionAtStart) {
+        clearDirty();
+        if (successMessage) showStatus(successMessage, successDuration);
+      }
+
+      return true;
+    } catch (err) {
+      const message = err?.toString?.() || String(err);
+      console.error("Save failed:", err);
+      showStatus(errorPrefix + message, 5000);
+      return false;
+    } finally {
+      savePromise = null;
+    }
+  })();
+
+  return savePromise;
+}
+
 // ── Save ──
 async function saveJournal() {
+  return persistJournal({
+    successMessage: "Gespeichert ✓",
+    successDuration: 3000,
+    errorPrefix: "⚠ Speichern fehlgeschlagen: ",
+  });
   if (!currentJournal || !currentFilePath || !currentPassword) return;
 
   syncActiveEntry();
   currentJournal.metadata.modified = new Date().toISOString();
+
+  // Ensure all required fields exist
+  normalizeJournalData();
 
   try {
     await window.__TAURI__.invoke("save_journal", {
@@ -757,6 +900,35 @@ async function saveJournal() {
 
 // ── Close ──
 async function closeJournal() {
+  if (isDirty) {
+    const saved = await persistJournal({
+      errorPrefix: "⚠ Vor dem Schließen konnte nicht gespeichert werden: ",
+    });
+    if (!saved) return;
+  }
+
+  clearTimeout(autoSaveTimer);
+  if (window._autoSaveInterval) {
+    clearInterval(window._autoSaveInterval);
+    window._autoSaveInterval = null;
+  }
+
+  try {
+    await window.__TAURI__.invoke("close_journal");
+  } catch (err) {
+    console.warn("close_journal failed:", err);
+  }
+
+  currentJournal = null;
+  currentFilePath = null;
+  currentPassword = null;
+  currentKeyfile = null;
+  activeEntryId = null;
+  isDirty = false;
+  showEmptyState();
+  showScreen("welcome-screen");
+  renderRecentJournals();
+  return;
   if (isDirty) await doAutoSave();
   currentJournal = null;
   currentFilePath = null;

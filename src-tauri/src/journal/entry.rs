@@ -22,10 +22,15 @@ impl Default for Mood {
 pub struct JournalEntry {
     pub id: String,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
     pub mood: Mood,
+    #[serde(default)]
     pub attachments: Vec<String>,
 }
 
