@@ -96,6 +96,9 @@ function removeFromRecent(path) {
   saveRecentJournals();
 }
 
+// Make it globally accessible for inline onclick handlers
+window.removeFromRecent = removeFromRecent;
+
 function renderRecentJournals() {
   const container = $id("recent-journals");
   if (!container) return;
@@ -267,7 +270,7 @@ async function doCreateJournal() {
         created: new Date().toISOString(),
         modified: new Date().toISOString(),
         app: "Lockbook",
-        version: "1.0.0",
+        version: "1.0.1",
       },
     };
 
@@ -450,6 +453,9 @@ function bindJournalUI() {
 }
 
 function enterJournalUI() {
+  // Normalize journal data to ensure all entries have required fields
+  normalizeJournalData();
+  
   showScreen("journal-ui");
   renderEntryList();
   updateMetadata();
@@ -531,6 +537,7 @@ function createNewEntry() {
     content: "",
     tags: [],
     mood: "neutral",
+    attachments: [],
   };
 
   currentJournal.entries.push(entry);
@@ -598,6 +605,9 @@ function removeTag(tag) {
   renderTags();
   markDirty();
 }
+
+// Make it globally accessible for inline onclick handlers
+window.removeTag = removeTag;
 
 function renderTags() {
   const container = $id("tags-row");
@@ -710,6 +720,9 @@ async function doAutoSave() {
   syncActiveEntry();
   currentJournal.metadata.modified = new Date().toISOString();
 
+  // Ensure all required fields exist
+  normalizeJournalData();
+
   try {
     await window.__TAURI__.invoke("save_journal", {
       path: currentFilePath,
@@ -734,12 +747,32 @@ function syncActiveEntry() {
   entry.mood = $id("mood-select")?.value || "neutral";
 }
 
+// Ensure all entries have required fields (for compatibility with Rust backend)
+function normalizeJournalData() {
+  if (!currentJournal || !currentJournal.entries) return;
+  
+  const validMoods = ["happy", "neutral", "sad", "angry", "anxious"];
+  
+  currentJournal.entries.forEach((entry) => {
+    if (!entry.attachments) entry.attachments = [];
+    if (!entry.tags) entry.tags = [];
+    if (!entry.mood || !validMoods.includes(entry.mood.toLowerCase())) {
+      entry.mood = "neutral";
+    } else {
+      entry.mood = entry.mood.toLowerCase();
+    }
+  });
+}
+
 // ── Save ──
 async function saveJournal() {
   if (!currentJournal || !currentFilePath || !currentPassword) return;
 
   syncActiveEntry();
   currentJournal.metadata.modified = new Date().toISOString();
+
+  // Ensure all required fields exist
+  normalizeJournalData();
 
   try {
     await window.__TAURI__.invoke("save_journal", {
