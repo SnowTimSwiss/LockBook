@@ -11,6 +11,7 @@ let recentJournals = [];
 let isDirty = false;
 let savePromise = null;
 let dirtyRevision = 0;
+let lastWindowTitle = "Lockbook";
 
 // ── DOM refs ──
 const $ = (sel) => document.querySelector(sel);
@@ -22,7 +23,7 @@ const $id = (id) => document.getElementById(id);
 // ── Init ──
 document.addEventListener("DOMContentLoaded", () => {
   loadRecentJournals();
-  checkTimEnc();
+  scheduleTimEncCheck();
   bindWelcomeButtons();
   bindCreateScreen();
   bindLockScreen();
@@ -71,6 +72,18 @@ async function checkTimEnc() {
 // ═══════════════════════════════════════════════════════════════
 //  RECENT JOURNALS
 // ═══════════════════════════════════════════════════════════════
+
+function scheduleTimEncCheck() {
+  const run = () => {
+    checkTimEnc().catch((err) => console.warn("TimENC check failed:", err));
+  };
+
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(run, { timeout: 1500 });
+  } else {
+    setTimeout(run, 250);
+  }
+}
 
 function loadRecentJournals() {
   try {
@@ -413,7 +426,7 @@ function bindJournalUI() {
   });
 
   // Title input → mark dirty
-  $id("entry-title-input")?.addEventListener("input", () => markDirty());
+  $id("entry-title-input")?.addEventListener("input", handleTitleInput);
 
   // Content editor → mark dirty
   $id("content-editor")?.addEventListener("input", () => {
@@ -507,6 +520,11 @@ function renderEntryList() {
 }
 
 function selectEntry(id) {
+  if (activeEntryId && activeEntryId !== id) {
+    syncActiveEntry();
+    updateActiveEntryListTitle();
+  }
+
   activeEntryId = id;
   const entry = currentJournal.entries.find((e) => e.id === id);
   if (!entry) return;
@@ -524,6 +542,7 @@ function selectEntry(id) {
   renderTags();
   updateWordCount();
   updateMetadata();
+  updateTitleSurfaces();
 
   // Reset to write tab
   $$("#editor-tabs .etab").forEach((t) => t.classList.remove("active"));
@@ -568,6 +587,7 @@ function deleteCurrentEntry() {
   showEmptyState();
   renderEntryList();
   updateMetadata();
+  updateTitleSurfaces();
   markDirty();
 }
 
@@ -582,7 +602,7 @@ function setDateAsTitle() {
   } else if (input) {
     input.value += ` — ${dateStr}`;
   }
-  markDirty();
+  handleTitleInput();
 }
 
 // ── Tags ──
@@ -674,24 +694,99 @@ function updateWordCount() {
 function updateMetadata() {
   if (!currentJournal || !currentJournal.metadata) return;
   const meta = currentJournal.metadata;
-  const entries = currentJournal.entries;
-
   const metaCreated = $id("meta-created");
   if (metaCreated) metaCreated.textContent = `Created: ${formatDate(meta.created)}`;
   const metaModified = $id("meta-modified");
   if (metaModified) metaModified.textContent = `Modified: ${formatDate(meta.modified)}`;
 
-  // Journal title in topbar
-  const jTitle = $id("journal-title");
-  if (jTitle) jTitle.textContent = meta.name || currentFilePath.split(/[\\/]/).pop() || "Journal";
+  updateTitleSurfaces();
 
   updateWordCount();
 }
 
 // ── Dirty state ──
+function getJournalDisplayName() {
+  return currentJournal?.metadata?.name || currentFilePath?.split(/[\\/]/).pop() || "Journal";
+}
+
+function getActiveEntry() {
+  if (!currentJournal || !activeEntryId) return null;
+  return currentJournal.entries.find((e) => e.id === activeEntryId) || null;
+}
+
+function getActiveEntryDisplayTitle() {
+  const title = getActiveEntry()?.title?.trim();
+  return title || "Untitled entry";
+}
+
+function updateTitleSurfaces() {
+  if (!currentJournal) {
+    if (lastWindowTitle !== "Lockbook") {
+      document.title = "Lockbook";
+      lastWindowTitle = "Lockbook";
+      try {
+        window.__TAURI__?.window?.appWindow?.setTitle("Lockbook");
+      } catch (err) {
+        console.warn("Window title update failed:", err);
+      }
+    }
+    return;
+  }
+
+  const journalName = getJournalDisplayName();
+  const entryTitle = activeEntryId ? getActiveEntryDisplayTitle() : null;
+  const fullTitle = entryTitle ? `${entryTitle} - ${journalName} - Lockbook` : `${journalName} - Lockbook`;
+
+  if (lastWindowTitle !== fullTitle) {
+    document.title = fullTitle;
+    lastWindowTitle = fullTitle;
+    try {
+      window.__TAURI__?.window?.appWindow?.setTitle(fullTitle);
+    } catch (err) {
+      console.warn("Window title update failed:", err);
+    }
+  }
+
+  const jTitle = $id("journal-title");
+  if (jTitle) jTitle.textContent = entryTitle ? `${journalName} / ${entryTitle}` : journalName;
+}
+
+function updateActiveEntryListTitle() {
+  const entry = getActiveEntry();
+  if (!entry) return;
+
+  const container = $id("entry-list");
+  if (!container) return;
+
+  const item = [...container.querySelectorAll(".entry-item")].find((el) => el.dataset.id === entry.id);
+  const titleEl = item?.querySelector(".ei-title");
+  if (titleEl) titleEl.textContent = entry.title || "(Kein Titel)";
+}
+
+function handleTitleInput() {
+  const entry = getActiveEntry();
+  if (!entry) return;
+
+  entry.title = $id("entry-title-input")?.value || "";
+  touchJournalModified();
+  updateActiveEntryListTitle();
+  updateTitleSurfaces();
+  markDirty();
+}
+
+function touchJournalModified() {
+  if (!currentJournal) return;
+  if (!currentJournal.metadata || typeof currentJournal.metadata !== "object") {
+    currentJournal.metadata = {};
+  }
+  currentJournal.metadata.modified = new Date().toISOString();
+}
+
 function markDirty() {
+  touchJournalModified();
   isDirty = true;
   dirtyRevision += 1;
+  updateMetadata();
   const dot = $id("status-dot");
   if (dot) dot.classList.add("unsaved");
   const statusText = $id("status-text");
@@ -925,6 +1020,7 @@ async function closeJournal() {
   currentKeyfile = null;
   activeEntryId = null;
   isDirty = false;
+  updateTitleSurfaces();
   showEmptyState();
   showScreen("welcome-screen");
   renderRecentJournals();

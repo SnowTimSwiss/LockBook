@@ -12,62 +12,89 @@ pub struct JournalState(pub Mutex<Option<OpenJournal>>);
 
 /// Returns info about the timenc installation for the UI warning banner.
 #[tauri::command]
-pub fn get_timenc_info() -> serde_json::Value {
-    if let Some(path) = timenc_cli::timenc_path() {
-        let version = timenc_cli::version().unwrap_or_else(|| "unknown".into());
-        serde_json::json!({
-            "found": true,
-            "path": path.to_string_lossy().to_string(),
-            "version": version,
-            "message": format!("TimENC {} found", version),
-            "searched_in": null
-        })
-    } else {
+pub async fn get_timenc_info() -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        if let Some(path) = timenc_cli::timenc_path() {
+            let version = timenc_cli::version().unwrap_or_else(|| "unknown".into());
+            serde_json::json!({
+                "found": true,
+                "path": path.to_string_lossy().to_string(),
+                "version": version,
+                "message": format!("TimENC {} found", version),
+                "searched_in": null
+            })
+        } else {
+            serde_json::json!({
+                "found": false,
+                "path": null,
+                "version": null,
+                "message": "TimENC CLI not found on PATH or in known locations.",
+                "searched_in": "PATH + registry + known paths"
+            })
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
         serde_json::json!({
             "found": false,
             "path": null,
             "version": null,
-            "message": "TimENC CLI not found on PATH or in known locations.",
+            "message": "TimENC check failed.",
             "searched_in": "PATH + registry + known paths"
         })
-    }
+    })
 }
 
 /// Returns true if the `timenc` CLI is on PATH.
 #[tauri::command]
-pub fn check_timenc_installed() -> bool {
-    timenc_cli::is_installed()
+pub async fn check_timenc_installed() -> bool {
+    tauri::async_runtime::spawn_blocking(timenc_cli::is_installed)
+        .await
+        .unwrap_or(false)
 }
 
 /// Returns the installed timenc version string, or None.
 #[tauri::command]
-pub fn get_timenc_version() -> Option<String> {
-    timenc_cli::version()
+pub async fn get_timenc_version() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(timenc_cli::version)
+        .await
+        .unwrap_or(None)
 }
 
 /// Returns the resolved path to the timenc binary (for diagnostic display).
 #[tauri::command]
-pub fn get_timenc_path() -> Option<String> {
-    timenc_cli::timenc_path().map(|p| p.to_string_lossy().to_string())
+pub async fn get_timenc_path() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        timenc_cli::timenc_path().map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// Generate a 32-byte random keyfile at `output_path`.
 #[tauri::command]
-pub fn generate_keyfile(output_path: String) -> Result<()> {
-    timenc_cli::generate_keyfile(&output_path)
+pub async fn generate_keyfile(output_path: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || timenc_cli::generate_keyfile(&output_path))
+        .await
+        .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))
 }
 
 // ─── Journal lifecycle ───────────────────────────────────────────────────────
 
 /// Create a new empty journal and keep it open in state.
 #[tauri::command]
-pub fn create_journal(
+pub async fn create_journal(
     path: String,
     password: String,
     keyfile: Option<String>,
     state: State<'_, JournalState>,
 ) -> Result<JournalData> {
-    let data = encryption::create_journal(&path, &password, keyfile.as_deref())?;
+    let data_path = path.clone();
+    let data = tauri::async_runtime::spawn_blocking(move || {
+        encryption::create_journal(&data_path, &password, keyfile.as_deref())
+    })
+    .await
+    .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))?;
 
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
@@ -80,13 +107,18 @@ pub fn create_journal(
 
 /// Decrypt and open an existing `.timenc-journal` file.
 #[tauri::command]
-pub fn open_journal(
+pub async fn open_journal(
     path: String,
     password: String,
     keyfile: Option<String>,
     state: State<'_, JournalState>,
 ) -> Result<JournalData> {
-    let data = encryption::load_journal(&path, &password, keyfile.as_deref())?;
+    let data_path = path.clone();
+    let data = tauri::async_runtime::spawn_blocking(move || {
+        encryption::load_journal(&data_path, &password, keyfile.as_deref())
+    })
+    .await
+    .unwrap_or_else(|err| Err(JournalError::DecryptionFailed(err.to_string())))?;
 
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
@@ -100,7 +132,7 @@ pub fn open_journal(
 /// Encrypt and persist the current in-memory journal data to disk.
 /// This version accepts path, data directly (for client-side save).
 #[tauri::command]
-pub fn save_journal(
+pub async fn save_journal(
     path: String,
     password: String,
     keyfile: Option<String>,
@@ -108,7 +140,13 @@ pub fn save_journal(
     state: State<'_, JournalState>,
 ) -> Result<()> {
     // Persist to disk via timenc
-    encryption::save_journal(&path, &password, keyfile.as_deref(), &data)?;
+    let data_path = path.clone();
+    let data_for_disk = data.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        encryption::save_journal(&data_path, &password, keyfile.as_deref(), &data_for_disk)
+    })
+    .await
+    .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))?;
 
     // Also update the in-memory state
     let mut guard = state.0.lock().unwrap();
