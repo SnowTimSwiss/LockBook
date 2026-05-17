@@ -37,7 +37,7 @@ Every journal file is a `.timenc-journal` — a TimENC-encrypted container prote
 
 | Requirement | Minimum | Notes |
 |---|---|---|
-| [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) | any | Must be on `PATH` |
+| [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) | V20.0+ | Must be on `PATH` |
 | [Rust + Cargo](https://rustup.rs) | 1.70 | |
 | [Node.js](https://nodejs.org) | 18 | For `@tauri-apps/cli` |
 | Tauri system deps | – | See [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites) |
