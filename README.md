@@ -37,7 +37,7 @@ Every journal file is a `.timenc-journal` — a TimENC-encrypted container prote
 
 | Requirement | Minimum | Notes |
 |---|---|---|
-| [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) | any | Must be on `PATH` |
+| [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) | V20.0+ | Must be on `PATH` |
 | [Rust + Cargo](https://rustup.rs) | 1.70 | |
 | [Node.js](https://nodejs.org) | 18 | For `@tauri-apps/cli` |
 | Tauri system deps | – | See [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites) |
@@ -45,57 +45,6 @@ Every journal file is a `.timenc-journal` — a TimENC-encrypted container prote
 ### Install TimENC CLI
 
 Download from [TimENC releases](https://github.com/SnowTimSwiss/TimENC/releases/latest) and place it on your `PATH`:
-
-**Windows:**
-```powershell
-# Place in a PATH directory (e.g. C:\Windows\System32\ or add to PATH)
-# Or install via WinGet:
-winget install SnowTimSwiss.TimENC
-```
-
-**Linux:**
-```bash
-sudo install timenc /usr/local/bin/timenc
-```
-
-**macOS:**
-```bash
-sudo install timenc /usr/local/bin/timenc
-```
-
-Verify installation:
-```bash
-timenc --version
-```
-
-## 🚀 Quick Start
-
-```bash
-# 1. Clone the repo
-git clone https://github.com/SnowTimSwiss/LockBook.git
-cd lockbook
-
-# 2. Install dependencies
-npm install
-
-# 3. Run in development mode
-npm run dev
-```
-
-## 📦 Build
-
-```bash
-# Production build — installers in src-tauri/target/release/bundle/
-npm run build
-```
-
-### Build outputs
-
-| Platform | Output |
-|---|---|
-| Windows | `.msi` installer |
-| macOS | `.app` + `.dmg` |
-| Linux | `.deb`, `.AppImage`, `.rpm` |
 
 ## 🎹 Keyboard Shortcuts
 
