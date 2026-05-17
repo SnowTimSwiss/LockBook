@@ -46,57 +46,6 @@ Every journal file is a `.timenc-journal` — a TimENC-encrypted container prote
 
 Download from [TimENC releases](https://github.com/SnowTimSwiss/TimENC/releases/latest) and place it on your `PATH`:
 
-**Windows:**
-```powershell
-# Place in a PATH directory (e.g. C:\Windows\System32\ or add to PATH)
-# Or install via WinGet:
-winget install SnowTimSwiss.TimENC
-```
-
-**Linux:**
-```bash
-sudo install timenc /usr/local/bin/timenc
-```
-
-**macOS:**
-```bash
-sudo install timenc /usr/local/bin/timenc
-```
-
-Verify installation:
-```bash
-timenc --version
-```
-
-## 🚀 Quick Start
-
-```bash
-# 1. Clone the repo
-git clone https://github.com/SnowTimSwiss/LockBook.git
-cd lockbook
-
-# 2. Install dependencies
-npm install
-
-# 3. Run in development mode
-npm run dev
-```
-
-## 📦 Build
-
-```bash
-# Production build — installers in src-tauri/target/release/bundle/
-npm run build
-```
-
-### Build outputs
-
-| Platform | Output |
-|---|---|
-| Windows | `.msi` installer |
-| macOS | `.app` + `.dmg` |
-| Linux | `.deb`, `.AppImage`, `.rpm` |
-
 ## 🎹 Keyboard Shortcuts
 
 | Shortcut | Action |
