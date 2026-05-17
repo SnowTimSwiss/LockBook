@@ -9,7 +9,7 @@ use temp::{SecurePassword, SecureTempDir};
 
 const JOURNAL_JSON_NAME: &str = "journal.json";
 
-/// Decrypt a `.timenc-journal` file and deserialize the contained `JournalData`.
+/// Decrypt a `.lbook` or legacy `.timenc-journal` file and deserialize the contained `JournalData`.
 pub fn load_journal(
     journal_path: &str,
     password: &str,

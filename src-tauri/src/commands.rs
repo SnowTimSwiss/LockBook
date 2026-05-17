@@ -105,7 +105,7 @@ pub async fn create_journal(
     Ok(data)
 }
 
-/// Decrypt and open an existing `.timenc-journal` file.
+/// Decrypt and open an existing `.lbook` or legacy `.timenc-journal` file.
 #[tauri::command]
 pub async fn open_journal(
     path: String,

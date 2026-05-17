@@ -169,7 +169,7 @@ function bindWelcomeButtons() {
   if (btnOpen)
     btnOpen.addEventListener("click", async () => {
       const path = await window.__TAURI__.dialog.open({
-        filters: [{ name: "TimENC Journal", extensions: ["timenc-journal"] }],
+        filters: [{ name: "Lockbook Journal", extensions: ["lbook", "timenc-journal"] }],
       });
       if (path) {
         currentFilePath = path;
@@ -271,7 +271,7 @@ async function doCreateJournal() {
   if (password !== confirm) return showCreateError("Passwörter stimmen nicht überein");
   if (password.length < 4) return showCreateError("Passwort zu kurz (min. 4 Zeichen)");
 
-  const filePath = `${folder}/${name}.timenc-journal`;
+  const filePath = `${folder}/${name}.lbook`;
 
   try {
     await window.__TAURI__.invoke("create_journal", {
@@ -291,7 +291,7 @@ async function doCreateJournal() {
         created: new Date().toISOString(),
         modified: new Date().toISOString(),
         app: "Lockbook",
-        version: "1.0.1",
+        version: "1.1.0",
       },
     };
 
@@ -898,7 +898,7 @@ function normalizeJournalData() {
   if (!currentJournal.metadata.created) currentJournal.metadata.created = nowIso;
   if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
   if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
-  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.0.1";
+  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.1.0";
   if (!currentJournal.version) currentJournal.version = "1.0";
 
   return currentJournal;
@@ -1041,9 +1041,14 @@ async function closeJournal() {
 async function exportMarkdown() {
   if (!currentJournal) return;
 
+  syncActiveEntry();
+  normalizeJournalData();
+
   const name = currentJournal.metadata?.name || currentFilePath?.split(/[\\/]/).pop() || "journal";
   let md = `# ${name}\n\n`;
-  md += `*Exportiert am ${formatDate(Date.now())}*\n\n---\n\n`;
+  md += `Exportiert am: ${formatDate(Date.now())}\n`;
+  md += `Eintraege: ${currentJournal.entries.length}\n\n`;
+  md += `---\n\n`;
 
   const sorted = [...currentJournal.entries].sort(
     (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
@@ -1051,11 +1056,12 @@ async function exportMarkdown() {
 
   for (const entry of sorted) {
     md += `## ${entry.title || "(Kein Titel)"}\n\n`;
-    md += `*${formatEntryDate(entry.timestamp)}*`;
-    if (entry.mood) md += ` ${entry.mood}`;
-    md += `\n\n`;
+    md += `Titel: ${entry.title || "(Kein Titel)"}\n`;
+    md += `Datum: ${formatDate(entry.timestamp)}\n`;
+    md += `Emotion: ${entry.mood || "neutral"}\n`;
     if (entry.tags?.length) md += `Tags: ${entry.tags.map((t) => `#${t}`).join(", ")}\n\n`;
-    md += `${entry.content}\n\n---\n\n`;
+    else md += `\n`;
+    md += `${entry.content || ""}\n\n---\n\n`;
   }
 
   const path = await window.__TAURI__.dialog.save({

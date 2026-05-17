@@ -1,6 +1,6 @@
 {
   "name": "timenc-journal",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Encrypted journal app powered by TimENC",
   "license": "GPL-3.0",
   "scripts": {

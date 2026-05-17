@@ -10,7 +10,7 @@
 
 ---
 
-Every journal file is a `.timenc-journal` — a TimENC-encrypted container protecting your entries with **ChaCha20-Poly1305 AEAD** and **Argon2id** key derivation.
+Every journal file is a `.lbook` — a TimENC-encrypted container protecting your entries with **ChaCha20-Poly1305 AEAD** and **Argon2id** key derivation. Legacy `.timenc-journal` files can still be opened.
 
 ## ✨ Features
 
