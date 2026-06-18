@@ -383,7 +383,25 @@ body {
   display:flex; flex-direction:column;
 }
 .modal-title { font-size:16px; font-weight:600; }
+.modal-subtitle { font-size:12px; color:var(--text-muted); margin-top:1px; }
+.modal-head {
+  display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  margin-bottom:14px;
+}
 .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
+
+.settings-modal-box { width:420px; gap:14px; }
+.settings-section {
+  display:flex; flex-direction:column; gap:10px;
+  padding:12px; background:var(--bg-base);
+  border:1px solid var(--border); border-radius:var(--radius-md);
+}
+.settings-section-title {
+  font-size:11px; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:.5px;
+}
+.settings-error { text-align:left; min-height:0; }
+.settings-modal-box .modal-actions .btn { width:auto; }
 
 .emoji-modal-box { width:480px; max-height:420px; }
 

@@ -159,6 +159,7 @@
     <span class="sep"></span>
     <span id="journal-title"></span>
     <span class="spacer"></span>
+    <button class="tb-btn" id="btn-settings" title="Journal settings">Settings</button>
     <button class="tb-btn" id="btn-export-md" title="Export entry as Markdown">⬇ Export</button>
     <button class="tb-btn primary" id="btn-save" title="Ctrl+S">💾 Save</button>
     <button class="tb-btn danger" id="btn-close" title="Close journal">✕ Close</button>
@@ -253,6 +254,49 @@
   </div>
 
 </div><!-- /journal-ui -->
+
+<div id="settings-modal" class="modal-backdrop hidden">
+  <div class="modal-box settings-modal-box">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">Journal Settings</div>
+        <div class="modal-subtitle">Name and password</div>
+      </div>
+      <button class="tool-btn" id="settings-close-btn" title="Close">✕</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Journal</div>
+      <div class="form-group">
+        <label class="form-label">Journal Name</label>
+        <input class="form-input" id="settings-journal-name" autocomplete="off"/>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Change Password</div>
+      <div class="form-group">
+        <label class="form-label">Current Password</label>
+        <input class="form-input" id="settings-current-password" type="password" autocomplete="current-password"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">New Password</label>
+        <input class="form-input" id="settings-new-password" type="password" autocomplete="new-password"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirm New Password</label>
+        <input class="form-input" id="settings-confirm-password" type="password" autocomplete="new-password"
+               onkeydown="if(event.key==='Enter')$id('settings-save-btn').click()"/>
+      </div>
+    </div>
+
+    <div class="error-msg settings-error" id="settings-error"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="settings-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="settings-save-btn">Save Settings</button>
+    </div>
+  </div>
+</div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════
      EMOJI PICKER MODAL

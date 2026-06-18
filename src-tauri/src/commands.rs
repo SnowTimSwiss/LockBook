@@ -158,6 +158,46 @@ pub async fn save_journal(
     Ok(())
 }
 
+/// Verify the current password, then re-encrypt the journal with a new password.
+#[tauri::command]
+pub async fn change_journal_password(
+    path: String,
+    current_password: String,
+    new_password: String,
+    keyfile: Option<String>,
+    data: JournalData,
+    state: State<'_, JournalState>,
+) -> Result<()> {
+    let verify_path = path.clone();
+    let verify_keyfile = keyfile.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        encryption::load_journal(&verify_path, &current_password, verify_keyfile.as_deref())
+    })
+    .await
+    .unwrap_or_else(|err| Err(JournalError::DecryptionFailed(err.to_string())))?;
+
+    let data_path = path.clone();
+    let data_for_disk = data.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        encryption::save_journal(
+            &data_path,
+            &new_password,
+            keyfile.as_deref(),
+            &data_for_disk,
+        )
+    })
+    .await
+    .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))?;
+
+    let mut guard = state.0.lock().unwrap();
+    *guard = Some(OpenJournal {
+        path: path.clone(),
+        data: data.clone(),
+    });
+
+    Ok(())
+}
+
 /// Close the currently open journal (wipes in-memory data).
 #[tauri::command]
 pub fn close_journal(state: State<'_, JournalState>) -> Result<()> {

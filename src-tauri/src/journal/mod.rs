@@ -10,6 +10,8 @@ use crate::error::{JournalError, Result};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct JournalMetadata {
+    #[serde(default)]
+    pub name: String,
     pub created: DateTime<Utc>,
     pub modified: DateTime<Utc>,
     pub app: String,
@@ -20,6 +22,7 @@ impl Default for JournalMetadata {
     fn default() -> Self {
         let now = Utc::now();
         JournalMetadata {
+            name: String::new(),
             created: now,
             modified: now,
             app: "TimENC-Journal".to_string(),

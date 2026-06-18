@@ -28,6 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindCreateScreen();
   bindLockScreen();
   bindJournalUI();
+  bindSettingsUI();
   setupEmojiPicker();
   setupKeyboardShortcuts();
 });
@@ -473,6 +474,116 @@ function bindJournalUI() {
   $id("btn-shortcuts-help")?.addEventListener("click", toggleShortcutsModal);
 }
 
+function bindSettingsUI() {
+  $id("btn-settings")?.addEventListener("click", openSettingsModal);
+  $id("settings-close-btn")?.addEventListener("click", closeSettingsModal);
+  $id("settings-cancel-btn")?.addEventListener("click", closeSettingsModal);
+  $id("settings-save-btn")?.addEventListener("click", saveSettings);
+}
+
+function openSettingsModal() {
+  if (!currentJournal) return;
+
+  const modal = $id("settings-modal");
+  if (!modal) return;
+
+  clearSettingsError();
+  $id("settings-journal-name").value = getJournalDisplayName();
+  $id("settings-current-password").value = "";
+  $id("settings-new-password").value = "";
+  $id("settings-confirm-password").value = "";
+
+  modal.classList.remove("hidden");
+  $id("settings-journal-name")?.focus();
+}
+
+function closeSettingsModal() {
+  $id("settings-modal")?.classList.add("hidden");
+}
+
+function clearSettingsError() {
+  const el = $id("settings-error");
+  if (!el) return;
+  el.textContent = "";
+  el.style.display = "none";
+}
+
+function showSettingsError(message) {
+  const el = $id("settings-error");
+  if (!el) return;
+  el.textContent = message;
+  el.style.display = "block";
+}
+
+async function saveSettings() {
+  if (!currentJournal || !currentFilePath || !currentPassword) return;
+
+  clearSettingsError();
+
+  const saveButton = $id("settings-save-btn");
+  const name = ($id("settings-journal-name")?.value || "").trim();
+  const currentPasswordInput = $id("settings-current-password")?.value || "";
+  const newPassword = $id("settings-new-password")?.value || "";
+  const confirmPassword = $id("settings-confirm-password")?.value || "";
+  const wantsPasswordChange = Boolean(currentPasswordInput || newPassword || confirmPassword);
+  const previousMetadata = currentJournal.metadata ? { ...currentJournal.metadata } : null;
+
+  if (!name) return showSettingsError("Journal name eingeben");
+
+  if (wantsPasswordChange) {
+    if (!currentPasswordInput) return showSettingsError("Aktuelles Passwort eingeben");
+    if (!newPassword) return showSettingsError("Neues Passwort eingeben");
+    if (newPassword !== confirmPassword) return showSettingsError("Neue Passwoerter stimmen nicht ueberein");
+    if (newPassword.length < 4) return showSettingsError("Neues Passwort zu kurz (min. 4 Zeichen)");
+  }
+
+  const previousPassword = currentPassword;
+  try {
+    if (saveButton) saveButton.disabled = true;
+    syncActiveEntry();
+
+    if (!currentJournal.metadata || typeof currentJournal.metadata !== "object") {
+      currentJournal.metadata = {};
+    }
+    currentJournal.metadata.name = name;
+    currentJournal.metadata.modified = new Date().toISOString();
+    normalizeJournalData();
+
+    if (wantsPasswordChange) {
+      const payload = buildJournalPayload();
+      await window.__TAURI__.invoke("change_journal_password", {
+        path: currentFilePath,
+        currentPassword: currentPasswordInput,
+        newPassword,
+        keyfile: currentKeyfile || null,
+        data: payload,
+      });
+      currentPassword = newPassword;
+      clearDirty();
+      showStatus("Settings saved", 3000);
+    } else {
+      const saved = await persistJournal({
+        successMessage: "Settings saved",
+        successDuration: 3000,
+        errorPrefix: "Settings save failed: ",
+      });
+      if (!saved) return;
+    }
+
+    addToRecent(currentFilePath, name);
+    updateMetadata();
+    updateTitleSurfaces();
+    closeSettingsModal();
+  } catch (err) {
+    currentPassword = previousPassword;
+    if (previousMetadata) currentJournal.metadata = previousMetadata;
+    const message = err?.toString?.() || String(err);
+    showSettingsError(message.replace(/^Error:\s*/i, ""));
+  } finally {
+    if (saveButton) saveButton.disabled = false;
+  }
+}
+
 function enterJournalUI() {
   // Normalize journal data to ensure all entries have required fields
   normalizeJournalData();
@@ -895,6 +1006,7 @@ function normalizeJournalData() {
     currentJournal.metadata = {};
   }
 
+  if (typeof currentJournal.metadata.name !== "string") currentJournal.metadata.name = "";
   if (!currentJournal.metadata.created) currentJournal.metadata.created = nowIso;
   if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
   if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
@@ -1262,6 +1374,7 @@ function setupKeyboardShortcuts() {
     if (e.key === "Escape") {
       $id("emoji-modal")?.classList.add("hidden");
       $id("shortcuts-modal")?.classList.add("hidden");
+      $id("settings-modal")?.classList.add("hidden");
     }
   });
 }

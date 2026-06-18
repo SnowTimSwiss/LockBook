@@ -26,6 +26,7 @@ fn main() {
             commands::create_journal,
             commands::open_journal,
             commands::save_journal,
+            commands::change_journal_password,
             commands::close_journal,
             commands::get_journal_data,
             // Entry management
