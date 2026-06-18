@@ -37,7 +37,7 @@ Every journal file is a `.lbook` — a TimENC-encrypted container protecting you
 
 | Requirement | Minimum | Notes |
 |---|---|---|
-| [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) | V20.0+ | Must be on `PATH` |
+| [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) | v2.0+ | Must be on `PATH` |
 | [Rust + Cargo](https://rustup.rs) | 1.70 | |
 | [Node.js](https://nodejs.org) | 18 | For `@tauri-apps/cli` |
 | Tauri system deps | – | See [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites) |
