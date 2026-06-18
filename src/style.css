@@ -185,11 +185,60 @@ body {
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 #main { display:flex; flex:1; overflow:hidden; }
 
+html.resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+}
+
+html.resizing-sidebar * {
+  user-select: none !important;
+}
+
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 #sidebar {
-  width:270px; min-width:200px; max-width:340px;
-  display:flex; flex-direction:column;
-  background:var(--bg-surface); border-right:1px solid var(--border); flex-shrink:0;
+  width:var(--sidebar-width, 270px);
+  min-width:220px;
+  max-width:420px;
+  display:flex;
+  flex-direction:column;
+  background:var(--bg-surface);
+  border-right:1px solid var(--border);
+  flex-shrink:0;
+}
+
+#sidebar-resizer {
+  width:6px;
+  flex:0 0 6px;
+  background:transparent;
+  cursor:col-resize;
+  position:relative;
+  touch-action:none;
+}
+
+#sidebar-resizer::before {
+  content:"";
+  position:absolute;
+  inset:0 2px;
+  background:transparent;
+  transition:background var(--transition);
+}
+
+#sidebar-resizer::after {
+  content:"";
+  position:absolute;
+  top:0;
+  bottom:0;
+  left:50%;
+  width:1px;
+  transform:translateX(-50%);
+  background:var(--border);
+  transition:background var(--transition), width var(--transition);
+}
+
+#sidebar-resizer:hover::after,
+#sidebar-resizer:active::after {
+  background:var(--accent);
+  width:2px;
 }
 #search-wrap { padding:10px 10px 8px; border-bottom:1px solid var(--border); }
 #search-input {

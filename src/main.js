@@ -12,6 +12,12 @@ let isDirty = false;
 let savePromise = null;
 let dirtyRevision = 0;
 let lastWindowTitle = "Lockbook";
+let sidebarWidth = null;
+
+const SIDEBAR_WIDTH_KEY = "lockbook_sidebar_width";
+const SIDEBAR_DEFAULT_WIDTH = 270;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 420;
 
 // ── DOM refs ──
 const $ = (sel) => document.querySelector(sel);
@@ -22,6 +28,13 @@ const $id = (id) => document.getElementById(id);
 
 // ── Init ──
 document.addEventListener("DOMContentLoaded", () => {
+  loadSidebarWidth();
+  bindSidebarResize();
+  window.addEventListener("resize", () => {
+    if (sidebarWidth !== null) {
+      applySidebarWidth(sidebarWidth, false, true);
+    }
+  });
   loadRecentJournals();
   scheduleTimEncCheck();
   bindWelcomeButtons();
@@ -41,6 +54,89 @@ function showScreen(screenId) {
   ["welcome-screen", "create-screen", "lock-screen", "journal-ui"].forEach((id) => {
     const el = $id(id);
     if (el) el.style.display = id === screenId ? "flex" : "none";
+  });
+}
+
+function loadSidebarWidth() {
+  try {
+    const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    sidebarWidth = clampSidebarWidth(Number.isFinite(stored) ? stored : SIDEBAR_DEFAULT_WIDTH, false);
+  } catch {
+    sidebarWidth = SIDEBAR_DEFAULT_WIDTH;
+  }
+
+  applySidebarWidth(sidebarWidth, false);
+}
+
+function clampSidebarWidth(width, respectLayout = true) {
+  const parsed = Number(width);
+  let clamped = Number.isFinite(parsed) ? parsed : SIDEBAR_DEFAULT_WIDTH;
+  clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, clamped));
+
+  if (respectLayout) {
+    const main = $id("main");
+    const rect = main?.getBoundingClientRect();
+    if (rect && rect.width > 0) {
+      const maxByLayout = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.floor(rect.width - 420)));
+      clamped = Math.min(clamped, maxByLayout);
+    }
+  }
+
+  return Math.round(clamped);
+}
+
+function applySidebarWidth(width, persist = false, respectLayout = true) {
+  const clamped = clampSidebarWidth(width, respectLayout);
+  sidebarWidth = clamped;
+  document.documentElement.style.setProperty("--sidebar-width", `${clamped}px`);
+
+  if (persist) {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped));
+  }
+
+  return clamped;
+}
+
+function bindSidebarResize() {
+  const handle = $id("sidebar-resizer");
+  if (!handle || handle.dataset.bound === "true") return;
+  handle.dataset.bound = "true";
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = SIDEBAR_DEFAULT_WIDTH;
+
+  const stopDragging = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.documentElement.classList.remove("resizing-sidebar");
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", stopDragging);
+    document.removeEventListener("pointercancel", stopDragging);
+    applySidebarWidth(sidebarWidth, true);
+  };
+
+  const onPointerMove = (event) => {
+    if (!dragging) return;
+    applySidebarWidth(startWidth + (event.clientX - startX), false);
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+
+    dragging = true;
+    startX = event.clientX;
+    startWidth = sidebarWidth ?? SIDEBAR_DEFAULT_WIDTH;
+
+    document.documentElement.classList.add("resizing-sidebar");
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", stopDragging);
+    document.addEventListener("pointercancel", stopDragging);
+  });
+
+  handle.addEventListener("dblclick", () => {
+    applySidebarWidth(SIDEBAR_DEFAULT_WIDTH, true);
   });
 }
 
@@ -292,7 +388,7 @@ async function doCreateJournal() {
         created: new Date().toISOString(),
         modified: new Date().toISOString(),
         app: "Lockbook",
-        version: "1.1.0",
+        version: "1.2.0",
       },
     };
 
@@ -589,6 +685,7 @@ function enterJournalUI() {
   normalizeJournalData();
 
   showScreen("journal-ui");
+  applySidebarWidth(sidebarWidth ?? SIDEBAR_DEFAULT_WIDTH, false, true);
   renderEntryList();
   updateMetadata();
   startAutoSave();
@@ -1010,7 +1107,7 @@ function normalizeJournalData() {
   if (!currentJournal.metadata.created) currentJournal.metadata.created = nowIso;
   if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
   if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
-  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.1.0";
+  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.2.0";
   if (!currentJournal.version) currentJournal.version = "1.0";
 
   return currentJournal;
