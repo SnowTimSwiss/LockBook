@@ -29,10 +29,6 @@ Every journal file is a `.lbook` — a TimENC-encrypted container protecting you
 - 💾 **Auto-save** every 30 seconds
 - 🖥️ **Cross-platform** — Windows, macOS, Linux
 
-## 📸 Screenshots
-
-> *Add screenshots here after first build*
-
 ## 🔧 Prerequisites
 
 | Requirement | Minimum | Notes |
