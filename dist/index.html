@@ -36,8 +36,7 @@
 <div id="timenc-warning">
   <span>⚠</span>
   <span id="timenc-warn-msg">TimENC CLI not found on PATH.</span>
-  <a id="timenc-download-link" href="#" style="margin-left:8px;color:var(--warning)"
-     onclick="__TAURI__.shell.open('https://github.com/SnowTimSwiss/TimENC/releases/latest');return false;">
+  <a id="timenc-download-link" href="#" style="margin-left:8px;color:var(--warning)">
     Download ↗
   </a>
   <span id="timenc-ver" style="margin-left:auto;opacity:.6;font-size:11px"></span>
@@ -89,14 +88,12 @@
 
     <div class="form-group">
       <label class="form-label">Password</label>
-      <input class="form-input" id="create-password" type="password" placeholder="Choose a strong password…"
-             onkeydown="if(event.key==='Enter')$id('create-submit-btn').click()"/>
+      <input class="form-input" id="create-password" type="password" placeholder="Choose a strong password…"/>
     </div>
 
     <div class="form-group">
       <label class="form-label">Confirm Password</label>
-      <input class="form-input" id="create-confirm-pw" type="password" placeholder="Repeat password…"
-             onkeydown="if(event.key==='Enter')$id('create-submit-btn').click()"/>
+      <input class="form-input" id="create-confirm-pw" type="password" placeholder="Repeat password…"/>
     </div>
 
     <div class="form-group">
@@ -129,15 +126,13 @@
     <div class="form-group">
       <label class="form-label">Password</label>
       <input class="form-input" id="lock-password" type="password"
-             placeholder="Enter password…" autocomplete="current-password"
-             onkeydown="if(event.key==='Enter')$id('lock-submit-btn').click()"/>
+             placeholder="Enter password…" autocomplete="current-password"/>
     </div>
 
     <div class="form-group">
       <label class="form-label">Keyfile <span style="color:var(--text-muted)">(optional)</span></label>
       <div class="form-row">
-        <input class="form-input" id="lock-keyfile" placeholder="Path to .key file…"
-               onkeydown="if(event.key==='Enter')$id('lock-submit-btn').click()"/>
+        <input class="form-input" id="lock-keyfile" placeholder="Path to .key file…"/>
         <button class="btn btn-secondary btn-sm" id="lock-browse-keyfile">Browse</button>
       </div>
     </div>
@@ -281,18 +276,15 @@
       <div class="settings-section-title">Change Password</div>
       <div class="form-group">
         <label class="form-label">Current Password</label>
-        <input class="form-input" id="settings-current-password" type="password" autocomplete="current-password"
-               onkeydown="if(event.key==='Enter')$id('settings-save-btn').click()"/>
+        <input class="form-input" id="settings-current-password" type="password" autocomplete="current-password"/>
       </div>
       <div class="form-group">
         <label class="form-label">New Password</label>
-        <input class="form-input" id="settings-new-password" type="password" autocomplete="new-password"
-               onkeydown="if(event.key==='Enter')$id('settings-save-btn').click()"/>
+        <input class="form-input" id="settings-new-password" type="password" autocomplete="new-password"/>
       </div>
       <div class="form-group">
         <label class="form-label">Confirm New Password</label>
-        <input class="form-input" id="settings-confirm-password" type="password" autocomplete="new-password"
-               onkeydown="if(event.key==='Enter')$id('settings-save-btn').click()"/>
+        <input class="form-input" id="settings-confirm-password" type="password" autocomplete="new-password"/>
       </div>
     </div>
 
@@ -330,7 +322,7 @@
     <div class="shortcut-row"><kbd>Ctrl+/</kbd><span>Show shortcuts</span></div>
     <div class="shortcut-row"><kbd>Enter</kbd><span>Confirm password</span></div>
     <div class="modal-actions" style="margin-top:16px">
-      <button class="btn btn-secondary" onclick="$id('shortcuts-modal').classList.add('hidden')">Close</button>
+      <button class="btn btn-secondary" id="shortcuts-close-btn">Close</button>
     </div>
   </div>
 </div>

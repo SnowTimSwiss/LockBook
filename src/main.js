@@ -44,6 +44,14 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSettingsUI();
   setupEmojiPicker();
   setupKeyboardShortcuts();
+
+  $id("timenc-download-link")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    window.__TAURI__.shell.open("https://github.com/SnowTimSwiss/TimENC/releases/latest");
+  });
+  $id("shortcuts-close-btn")?.addEventListener("click", () => {
+    $id("shortcuts-modal")?.classList.add("hidden");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -356,6 +364,13 @@ function bindCreateScreen() {
 
   // Back
   $id("create-back-btn")?.addEventListener("click", () => showScreen("welcome-screen"));
+
+  // Enter-to-submit
+  ["create-password", "create-confirm-pw"].forEach((id) => {
+    $id(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $id("create-submit-btn")?.click();
+    });
+  });
 }
 
 async function doCreateJournal() {
@@ -439,6 +454,13 @@ function bindLockScreen() {
     currentFilePath = null;
     currentKeyfile = null;
     showScreen("welcome-screen");
+  });
+
+  // Enter-to-submit
+  ["lock-password", "lock-keyfile"].forEach((id) => {
+    $id(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $id("lock-submit-btn")?.click();
+    });
   });
 }
 
@@ -583,6 +605,13 @@ function bindSettingsUI() {
   $id("settings-close-btn")?.addEventListener("click", closeSettingsModal);
   $id("settings-cancel-btn")?.addEventListener("click", closeSettingsModal);
   $id("settings-save-btn")?.addEventListener("click", saveSettings);
+
+  // Enter-to-submit
+  ["settings-current-password", "settings-new-password", "settings-confirm-password"].forEach((id) => {
+    $id(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $id("settings-save-btn")?.click();
+    });
+  });
 }
 
 function openSettingsModal() {
