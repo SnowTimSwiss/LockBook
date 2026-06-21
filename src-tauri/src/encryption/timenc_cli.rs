@@ -92,7 +92,7 @@ fn read_registry_path() -> String {
         ("HKCU", r"Environment"),
         ("HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
     ] {
-        if let Ok(out) = Command::new("reg")
+        if let Ok(out) = no_window_cmd("reg")
             .args(["query", &format!("{}\\{}", hive, key), "/v", "Path"])
             .output()
         {

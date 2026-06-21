@@ -1,6 +1,6 @@
 [package]
 name = "lockbook"
-version = "1.2.0"
+version = "1.2.1"
 description = "Lockbook – encrypted journal powered by TimENC"
 authors = ["Lockbook"]
 license = "GPL-3.0"
