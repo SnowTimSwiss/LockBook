@@ -61,7 +61,7 @@
     <!-- Recent journals -->
     <div id="recent-journals" style="display:none"></div>
   </div>
-  <div class="screen-footer"><span class="app-version">v1.2.0</span> · Lockbook</div>
+  <div class="screen-footer"><span class="app-version">v1.2.1</span> · Lockbook</div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════
@@ -89,7 +89,8 @@
 
     <div class="form-group">
       <label class="form-label">Password</label>
-      <input class="form-input" id="create-password" type="password" placeholder="Choose a strong password…"/>
+      <input class="form-input" id="create-password" type="password" placeholder="Choose a strong password…"
+             onkeydown="if(event.key==='Enter')$id('create-submit-btn').click()"/>
     </div>
 
     <div class="form-group">
@@ -111,7 +112,7 @@
     <button class="btn btn-primary" id="create-submit-btn">Create Journal</button>
     <button class="btn btn-secondary" id="create-back-btn">← Back</button>
   </div>
-  <div class="screen-footer"><span class="app-version">v1.2.0</span> · Lockbook</div>
+  <div class="screen-footer"><span class="app-version">v1.2.1</span> · Lockbook</div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════
@@ -135,7 +136,8 @@
     <div class="form-group">
       <label class="form-label">Keyfile <span style="color:var(--text-muted)">(optional)</span></label>
       <div class="form-row">
-        <input class="form-input" id="lock-keyfile" placeholder="Path to .key file…"/>
+        <input class="form-input" id="lock-keyfile" placeholder="Path to .key file…"
+               onkeydown="if(event.key==='Enter')$id('lock-submit-btn').click()"/>
         <button class="btn btn-secondary btn-sm" id="lock-browse-keyfile">Browse</button>
       </div>
     </div>
@@ -144,7 +146,7 @@
     <button class="btn btn-primary" id="lock-submit-btn">Unlock</button>
     <button class="btn btn-secondary" id="lock-back-btn">← Back</button>
   </div>
-  <div class="screen-footer"><span class="app-version">v1.2.0</span> · Lockbook</div>
+  <div class="screen-footer"><span class="app-version">v1.2.1</span> · Lockbook</div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════
@@ -279,11 +281,13 @@
       <div class="settings-section-title">Change Password</div>
       <div class="form-group">
         <label class="form-label">Current Password</label>
-        <input class="form-input" id="settings-current-password" type="password" autocomplete="current-password"/>
+        <input class="form-input" id="settings-current-password" type="password" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter')$id('settings-save-btn').click()"/>
       </div>
       <div class="form-group">
         <label class="form-label">New Password</label>
-        <input class="form-input" id="settings-new-password" type="password" autocomplete="new-password"/>
+        <input class="form-input" id="settings-new-password" type="password" autocomplete="new-password"
+               onkeydown="if(event.key==='Enter')$id('settings-save-btn').click()"/>
       </div>
       <div class="form-group">
         <label class="form-label">Confirm New Password</label>

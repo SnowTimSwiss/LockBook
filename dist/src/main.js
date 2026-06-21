@@ -50,11 +50,19 @@ document.addEventListener("DOMContentLoaded", () => {
 //  SCREEN VISIBILITY
 // ═══════════════════════════════════════════════════════════════
 
+const SCREEN_AUTOFOCUS = {
+  "create-screen": "create-name",
+  "lock-screen": "lock-password",
+};
+
 function showScreen(screenId) {
   ["welcome-screen", "create-screen", "lock-screen", "journal-ui"].forEach((id) => {
     const el = $id(id);
     if (el) el.style.display = id === screenId ? "flex" : "none";
   });
+
+  const focusId = SCREEN_AUTOFOCUS[screenId];
+  if (focusId) $id(focusId)?.focus();
 }
 
 function loadSidebarWidth() {
@@ -388,7 +396,7 @@ async function doCreateJournal() {
         created: new Date().toISOString(),
         modified: new Date().toISOString(),
         app: "Lockbook",
-        version: "1.2.0",
+        version: "1.2.1",
       },
     };
 
@@ -1107,7 +1115,7 @@ function normalizeJournalData() {
   if (!currentJournal.metadata.created) currentJournal.metadata.created = nowIso;
   if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
   if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
-  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.2.0";
+  if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.2.1";
   if (!currentJournal.version) currentJournal.version = "1.0";
 
   return currentJournal;
