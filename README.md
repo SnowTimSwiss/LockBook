@@ -139,3 +139,7 @@ GPL-3.0 — same as TimENC. See [LICENSE](LICENSE) for details.
 - [Tauri](https://tauri.app) — App framework
 - [ChaCha20-Poly1305](https://en.wikipedia.org/wiki/ChaCha20-Poly1305) — AEAD cipher
 - [Argon2](https://en.wikipedia.org/wiki/Argon2) — Key derivation
+
+---
+
+**Lockbook** – Built with ❤️
