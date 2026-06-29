@@ -11,10 +11,9 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
-  # Lockbook reads/writes journal files anywhere the user picks, and shells out
-  # to the host `timenc` CLI via flatpak-spawn --host.
+  # Lockbook reads/writes journal files anywhere the user picks. TimENC encryption
+  # is bundled in-process, so no host access or flatpak-spawn is needed.
   - --filesystem=host
-  - --talk-name=org.freedesktop.Flatpak
 
 modules:
   - name: lockbook

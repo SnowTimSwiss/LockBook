@@ -2,9 +2,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum JournalError {
-    #[error("TimENC CLI is not installed. Download from: https://github.com/SnowTimSwiss/TimENC/releases/latest")]
-    TimencNotInstalled,
-
     #[error("TimENC encryption failed: {0}")]
     EncryptionFailed(String),
 

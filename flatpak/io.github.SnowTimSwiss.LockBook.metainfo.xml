@@ -10,7 +10,7 @@
       Lockbook is a secure encrypted diary that uses TimENC
       (ChaCha20-Poly1305 + Argon2id) to protect your entries.
     </p>
-    <p>Requires the TimENC CLI to be installed on the host.</p>
+    <p>TimENC encryption is built in, so no separate tools need to be installed.</p>
   </description>
   <launchable type="desktop-id">io.github.SnowTimSwiss.LockBook.desktop</launchable>
   <url type="homepage">https://github.com/SnowTimSwiss/LockBook</url>
@@ -20,6 +20,16 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.3.0" date="2026-06-29">
+      <description>
+        <p>TimENC is now bundled directly into Lockbook.</p>
+        <ul>
+          <li>Encryption now runs in-process — no separate TimENC install required on any platform.</li>
+          <li>Fixes "TimENC encryption failed" / "TimENC CLI is not installed" errors in the Flatpak and .deb builds.</li>
+          <li>Removed the host-access requirement from the Flatpak sandbox.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.2.1" date="2026-06-29"/>
   </releases>
 </component>

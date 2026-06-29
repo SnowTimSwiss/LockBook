@@ -1,15 +1,22 @@
 pub mod temp;
-pub mod timenc_cli;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use timenc::{DecryptOptions, EncryptOptions};
 
 use crate::error::{JournalError, Result};
 use crate::journal::JournalData;
 use temp::{SecurePassword, SecureTempDir};
 
 const JOURNAL_JSON_NAME: &str = "journal.json";
+/// Name of the in-temp copy of the encrypted journal used during decryption.
+const ENC_COPY_NAME: &str = "journal.enc";
 
 /// Decrypt a `.lbook` or legacy `.timenc-journal` file and deserialize the contained `JournalData`.
+///
+/// TimENC's `decrypt` securely deletes its input file on success, so we never
+/// hand it the user's real journal: we decrypt a throwaway copy inside a temp
+/// directory and leave the original untouched.
 pub fn load_journal(
     journal_path: &str,
     password: &str,
@@ -22,23 +29,30 @@ pub fn load_journal(
     }
 
     let tmp = SecureTempDir::new()?;
-    let output_dir = tmp.path().to_string_lossy().to_string();
+    let enc_copy = tmp.path().join(ENC_COPY_NAME);
+    std::fs::copy(journal_path, &enc_copy)?;
 
-    timenc_cli::decrypt(journal_path, &output_dir, password, keyfile)?;
+    let out_dir = tmp.path().join("out");
 
-    // timenc restores the original filename inside output_dir.
-    // Our convention: the decrypted file is always "journal.json".
-    // If timenc produces a different name (e.g., the stem of the .timenc file),
-    // we scan for the first JSON file.
-    let json_path = find_json_in_dir(tmp.path())?;
+    timenc::decrypt(
+        &enc_copy,
+        DecryptOptions {
+            password: password.to_string(),
+            keyfile_path: keyfile.map(PathBuf::from),
+            output_dir: out_dir.clone(),
+        },
+    )
+    .map_err(|e| JournalError::DecryptionFailed(e.to_string()))?;
+
+    // TimENC restores the original file name inside out_dir. Our convention is
+    // "journal.json", but we scan for the first JSON file to be robust.
+    let json_path = find_json_in_dir(&out_dir)?;
     let raw = std::fs::read(&json_path)?;
 
     let data = JournalData::from_json(&raw)?;
 
-    // Secure-delete the plaintext JSON from the temp directory.
-    if let Some(name) = json_path.file_name().and_then(|n| n.to_str()) {
-        let _ = tmp.secure_delete(name);
-    }
+    // Securely overwrite the plaintext JSON before the temp dir is dropped.
+    secure_delete_file(&json_path);
 
     Ok(data)
 }
@@ -55,16 +69,26 @@ pub fn save_journal(
 
     let tmp = SecureTempDir::new()?;
 
-    // Write plaintext JSON to temp directory
+    // Write plaintext JSON to the temp directory; TimENC encrypts it to the
+    // target path and securely deletes this plaintext copy on success.
     let json_bytes = data.to_json()?;
-    let json_path = tmp.write_file(JOURNAL_JSON_NAME, &json_bytes)?;
-    let json_path_str = json_path.to_string_lossy().to_string();
+    let json_path = tmp.path().join(JOURNAL_JSON_NAME);
+    std::fs::write(&json_path, &json_bytes)?;
 
-    // Encrypt directly to the target path
-    timenc_cli::encrypt(&json_path_str, journal_path, password, keyfile)?;
+    timenc::encrypt(
+        &json_path,
+        EncryptOptions {
+            password: password.to_string(),
+            keyfile_path: keyfile.map(PathBuf::from),
+            output_path: PathBuf::from(journal_path),
+            compress: false,
+        },
+    )
+    .map_err(|e| JournalError::EncryptionFailed(e.to_string()))?;
 
-    // Securely delete the plaintext copy
-    let _ = tmp.secure_delete(JOURNAL_JSON_NAME);
+    // Defensive: TimENC removes the plaintext on success, but if anything left
+    // it behind, overwrite it before the temp dir is dropped.
+    secure_delete_file(&json_path);
 
     Ok(())
 }
@@ -83,7 +107,7 @@ pub fn create_journal(
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Find the first `.json` file inside `dir`.
-fn find_json_in_dir(dir: &Path) -> Result<std::path::PathBuf> {
+fn find_json_in_dir(dir: &Path) -> Result<PathBuf> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -94,4 +118,25 @@ fn find_json_in_dir(dir: &Path) -> Result<std::path::PathBuf> {
     Err(JournalError::InvalidFormat(
         "Decrypted archive does not contain a JSON file".to_string(),
     ))
+}
+
+/// Best-effort secure delete of a plaintext file (overwrite with zeros, remove).
+fn secure_delete_file(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let len = meta.len() as usize;
+        let zeros = vec![0u8; len.min(64 * 1024)];
+        if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(path) {
+            use std::io::Write;
+            let mut written = 0usize;
+            while written < len {
+                let chunk = zeros.len().min(len - written);
+                if file.write_all(&zeros[..chunk]).is_err() {
+                    break;
+                }
+                written += chunk;
+            }
+            let _ = file.flush();
+        }
+    }
+    let _ = std::fs::remove_file(path);
 }

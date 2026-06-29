@@ -1,6 +1,6 @@
 [package]
 name = "lockbook"
-version = "1.2.1"
+version = "1.3.0"
 description = "Lockbook – encrypted journal powered by TimENC"
 authors = ["Lockbook"]
 license = "GPL-3.0"
@@ -21,6 +21,10 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.9"
 thiserror = "1.0"
+# TimENC encryption is bundled in-process (no external `timenc` binary needed).
+# Pinned to a specific commit on main for reproducible builds. For Flathub,
+# regenerate flatpak/cargo-sources.json so this git dep is vendored offline.
+timenc = { git = "https://github.com/SnowTimSwiss/TimENC.git", rev = "6e4d631b9c4427aade728a53ff14432a9a309cb3", default-features = false }
 dirs = "5.0"
 zeroize = { version = "1.7", features = ["derive"] }
 log = "0.4"

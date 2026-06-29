@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use tauri::State;
 
-use crate::encryption::{self, timenc_cli};
+use crate::encryption;
 use crate::error::{JournalError, Result};
 use crate::journal::{entry::JournalEntry, JournalData, OpenJournal};
 
@@ -10,73 +10,52 @@ pub struct JournalState(pub Mutex<Option<OpenJournal>>);
 
 // ─── TimENC ──────────────────────────────────────────────────────────────────
 
-/// Returns info about the timenc installation for the UI warning banner.
+/// Human-readable label for the bundled, in-process TimENC implementation.
+const TIMENC_BUNDLED: &str = "bundled (in-process)";
+
+/// Returns info about the TimENC implementation for the UI banner.
+///
+/// TimENC is now compiled into Lockbook, so it is always available — no external
+/// binary or PATH lookup is involved.
 #[tauri::command]
 pub async fn get_timenc_info() -> serde_json::Value {
-    tauri::async_runtime::spawn_blocking(|| {
-        if let Some(path) = timenc_cli::timenc_path() {
-            let version = timenc_cli::version().unwrap_or_else(|| "unknown".into());
-            serde_json::json!({
-                "found": true,
-                "path": path.to_string_lossy().to_string(),
-                "version": version,
-                "message": format!("TimENC {} found", version),
-                "searched_in": null
-            })
-        } else {
-            serde_json::json!({
-                "found": false,
-                "path": null,
-                "version": null,
-                "message": "TimENC CLI not found on PATH or in known locations.",
-                "searched_in": "PATH + registry + known paths"
-            })
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        serde_json::json!({
-            "found": false,
-            "path": null,
-            "version": null,
-            "message": "TimENC check failed.",
-            "searched_in": "PATH + registry + known paths"
-        })
+    serde_json::json!({
+        "found": true,
+        "path": TIMENC_BUNDLED,
+        "version": TIMENC_BUNDLED,
+        "message": "TimENC is bundled with Lockbook.",
+        "searched_in": null
     })
 }
 
-/// Returns true if the `timenc` CLI is on PATH.
+/// TimENC is bundled, so this is always true.
 #[tauri::command]
 pub async fn check_timenc_installed() -> bool {
-    tauri::async_runtime::spawn_blocking(timenc_cli::is_installed)
-        .await
-        .unwrap_or(false)
+    true
 }
 
-/// Returns the installed timenc version string, or None.
+/// Returns the bundled TimENC label.
 #[tauri::command]
 pub async fn get_timenc_version() -> Option<String> {
-    tauri::async_runtime::spawn_blocking(timenc_cli::version)
-        .await
-        .unwrap_or(None)
+    Some(TIMENC_BUNDLED.to_string())
 }
 
-/// Returns the resolved path to the timenc binary (for diagnostic display).
+/// TimENC is in-process; there is no external binary path.
 #[tauri::command]
 pub async fn get_timenc_path() -> Option<String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        timenc_cli::timenc_path().map(|p| p.to_string_lossy().to_string())
-    })
-    .await
-    .unwrap_or(None)
+    Some(TIMENC_BUNDLED.to_string())
 }
 
 /// Generate a 32-byte random keyfile at `output_path`.
 #[tauri::command]
 pub async fn generate_keyfile(output_path: String) -> Result<()> {
-    tauri::async_runtime::spawn_blocking(move || timenc_cli::generate_keyfile(&output_path))
-        .await
-        .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))
+    tauri::async_runtime::spawn_blocking(move || {
+        timenc::generate_keyfile(std::path::Path::new(&output_path))
+            .map(|_| ())
+            .map_err(|e| JournalError::EncryptionFailed(e.to_string()))
+    })
+    .await
+    .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))
 }
 
 // ─── Journal lifecycle ───────────────────────────────────────────────────────
