@@ -1,5 +1,13 @@
 // === Lockbook — Journal App Main Logic ===
 
+// ── Tauri v2 compatibility shim ──
+// In Tauri v2 the global API moved under `window.__TAURI__.core` (e.g.
+// `core.invoke`). Re-expose `invoke` at the top level so the call sites below
+// keep working unchanged.
+if (window.__TAURI__ && !window.__TAURI__.invoke && window.__TAURI__.core) {
+  window.__TAURI__.invoke = window.__TAURI__.core.invoke;
+}
+
 // ── State ──
 let currentJournal = null;
 let currentFilePath = null;
@@ -970,7 +978,7 @@ function updateTitleSurfaces() {
       document.title = "Lockbook";
       lastWindowTitle = "Lockbook";
       try {
-        window.__TAURI__?.window?.appWindow?.setTitle("Lockbook");
+        window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle("Lockbook");
       } catch (err) {
         console.warn("Window title update failed:", err);
       }
@@ -986,7 +994,7 @@ function updateTitleSurfaces() {
     document.title = fullTitle;
     lastWindowTitle = fullTitle;
     try {
-      window.__TAURI__?.window?.appWindow?.setTitle(fullTitle);
+      window.__TAURI__?.window?.getCurrentWindow?.()?.setTitle(fullTitle);
     } catch (err) {
       console.warn("Window title update failed:", err);
     }
@@ -1317,7 +1325,7 @@ async function exportMarkdown() {
 
   if (path) {
     try {
-      await window.__TAURI__.fs.writeTextFile(path, md);
+      await window.__TAURI__.invoke("write_text_file", { path, content: md });
       showStatus("Exportiert ✓", 3000);
     } catch (err) {
       showStatus("⚠ Export fehlgeschlagen: " + err, 5000);

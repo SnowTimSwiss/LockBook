@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lockbook
+Comment=Encrypted personal journal powered by TimENC
+Exec=lockbook
+Icon=io.github.SnowTimSwiss.LockBook
+Terminal=false
+Categories=Office;Utility;
+StartupNotify=true
+StartupWMClass=Lockbook

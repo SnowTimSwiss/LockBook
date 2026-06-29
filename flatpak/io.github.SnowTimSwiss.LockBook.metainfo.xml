@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.SnowTimSwiss.LockBook</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Lockbook</name>
+  <summary>Encrypted personal journal powered by TimENC</summary>
+  <description>
+    <p>
+      Lockbook is a secure encrypted diary that uses TimENC
+      (ChaCha20-Poly1305 + Argon2id) to protect your entries.
+    </p>
+    <p>Requires the TimENC CLI to be installed on the host.</p>
+  </description>
+  <launchable type="desktop-id">io.github.SnowTimSwiss.LockBook.desktop</launchable>
+  <url type="homepage">https://github.com/SnowTimSwiss/LockBook</url>
+  <url type="bugtracker">https://github.com/SnowTimSwiss/LockBook/issues</url>
+  <developer id="io.github.snowtimswiss">
+    <name>SnowTimSwiss</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.2.1" date="2026-06-29"/>
+  </releases>
+</component>

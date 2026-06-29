@@ -249,9 +249,26 @@ fn build_cmd(subcommand: &str) -> Result<Command> {
     Ok(cmd)
 }
 
-/// Create a `Command` with CREATE_NO_WINDOW on Windows.
+/// True when running inside a Flatpak sandbox.
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
+        || std::path::Path::new("/.flatpak-info").exists()
+}
+
+/// Create a `Command` for `program`, with CREATE_NO_WINDOW on Windows.
+///
+/// Inside a Flatpak sandbox the host `timenc` binary is not visible, so the
+/// command is routed through `flatpak-spawn --host` to run against the TimENC
+/// CLI installed on the host. This requires the `--talk-name=org.freedesktop.Flatpak`
+/// finish-arg in the Flatpak manifest.
 fn no_window_cmd<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
-    let mut cmd = Command::new(program);
+    let mut cmd = if in_flatpak() {
+        let mut c = Command::new("flatpak-spawn");
+        c.arg("--host").arg(program);
+        c
+    } else {
+        Command::new(program)
+    };
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

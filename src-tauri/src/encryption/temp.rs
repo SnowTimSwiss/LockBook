@@ -4,6 +4,17 @@ use zeroize::Zeroize;
 
 use crate::error::Result;
 
+/// When running inside a Flatpak sandbox, return a host-visible base directory
+/// for temporary files (so the host `timenc` can read/write them); otherwise
+/// `None` to use the system temp dir.
+fn flatpak_shared_tmp() -> Option<PathBuf> {
+    if super::timenc_cli::in_flatpak() {
+        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
 /// Manages a temporary directory that is securely cleaned up on drop.
 pub struct SecureTempDir {
     inner: TempDir,
@@ -11,9 +22,17 @@ pub struct SecureTempDir {
 
 impl SecureTempDir {
     pub fn new() -> Result<Self> {
-        Ok(SecureTempDir {
-            inner: TempDir::new()?,
-        })
+        let inner = match flatpak_shared_tmp() {
+            // Inside Flatpak, plaintext temp files must live where the host-side
+            // `timenc` (invoked via `flatpak-spawn --host`) can see them at the
+            // same path. XDG_CACHE_HOME is mapped onto the real host filesystem.
+            Some(base) => {
+                std::fs::create_dir_all(&base)?;
+                TempDir::new_in(&base)?
+            }
+            None => TempDir::new()?,
+        };
+        Ok(SecureTempDir { inner })
     }
 
     pub fn path(&self) -> &Path {

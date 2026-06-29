@@ -1,81 +1,193 @@
-name: Release
+name: Build and Release Packages
 
 on:
   release:
-    types: [published] # fires on both release and pre-release
+    types: [published]
 
-permissions:
-  contents: write
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: ""
-            artifact-name: lockbook-windows
-          - platform: macos-latest
-            args: "--target universal-apple-darwin"
-            artifact-name: lockbook-macos-universal
-          - platform: ubuntu-22.04
-            args: ""
-            artifact-name: lockbook-linux
-
-    runs-on: ${{ matrix.platform }}
-    name: Build · ${{ matrix.artifact-name }}
-
+  build-linux:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install Rust stable
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          # macOS universal binary needs both architectures
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Cache Rust build
-        uses: swatinem/rust-cache@v2
+      - name: Cache Cargo Registry
+        uses: actions/cache@v4
         with:
-          workspaces: src-tauri
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Cache Tauri Target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: ${{ runner.os }}-tauri-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tauri-
+
+      - name: Install Tauri dependencies (Ubuntu 24.04)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            libgtk-3-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             patchelf
 
-      - name: Install npm dependencies
-        run: npm ci
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
 
-      - name: Build & upload to release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: set TAURI_PRIVATE_KEY and TAURI_KEY_PASSWORD secrets
-          # in your repo settings for auto-updater signing.
+      - name: Build Tauri Bundles
+        run: |
+          cd src-tauri
+          cargo tauri build --bundles deb
+
+      - name: List Linux Bundles
+        run: find src-tauri/target/release/bundle -maxdepth 2 -type f
+
+      - name: Upload Linux Assets
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Lockbook ${{ github.ref_name }}"
-          releaseBody: |
-            ## Lockbook ${{ github.ref_name }}
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
 
-            Download the installer for your platform below.
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-            **Requires [TimENC CLI](https://github.com/SnowTimSwiss/TimENC/releases/latest) to be installed.**
-          releaseDraft: false
-          prerelease: ${{ github.event.release.prerelease }}
-          args: ${{ matrix.args }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Tauri Target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: ${{ runner.os }}-tauri-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tauri-
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri Bundles
+        run: |
+          cd src-tauri
+          cargo tauri build --bundles nsis
+
+      - name: Create Portable EXE
+        run: |
+          $guiExe = Join-Path "src-tauri\target\release" "lockbook.exe"
+          if (-not (Test-Path $guiExe)) {
+            throw "Could not find lockbook.exe in src-tauri\target\release"
+          }
+          Copy-Item $guiExe "Lockbook-portable-${{ github.event.release.tag_name }}.exe"
+
+      - name: List Windows Bundles
+        run: Get-ChildItem src-tauri\target\release\bundle -Recurse -File | Select-Object FullName,Length | Format-Table -AutoSize
+
+      - name: Upload Windows Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Lockbook-portable-${{ github.event.release.tag_name }}.exe
+            src-tauri/target/release/bundle/nsis/*.exe
+
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Tauri Target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: ${{ runner.os }}-tauri-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tauri-
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri Bundles
+        run: |
+          cd src-tauri
+          cargo tauri build --bundles dmg
+
+      - name: List macOS Bundles
+        run: find src-tauri/target/release/bundle -maxdepth 2 -type f
+
+      - name: Upload macOS Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+
+  build-flatpak:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-48
+      options: --privileged
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: Lockbook-${{ github.event.release.tag_name }}.flatpak
+          manifest-path: flatpak/io.github.SnowTimSwiss.LockBook.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+
+      - name: Upload Flatpak Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Lockbook-${{ github.event.release.tag_name }}.flatpak

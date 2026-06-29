@@ -14,6 +14,8 @@ fn main() {
     env_logger::init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(JournalState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             // TimENC helpers
