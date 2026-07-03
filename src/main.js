@@ -27,6 +27,12 @@ const SIDEBAR_DEFAULT_WIDTH = 270;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
 
+let attachmentsHeight = null;
+const ATTACHMENTS_HEIGHT_KEY = "lockbook_attachments_height";
+const ATTACHMENTS_DEFAULT_HEIGHT = 92;
+const ATTACHMENTS_MIN_HEIGHT = 44;
+const ATTACHMENTS_MAX_HEIGHT = 320;
+
 // "inline" | "attachment" — remembered choice for pasted images, see
 // resolvePasteImageChoice().
 const PASTE_IMAGE_PREF_KEY = "lockbook_paste_image_pref";
@@ -45,6 +51,8 @@ const $id = (id) => document.getElementById(id);
 document.addEventListener("DOMContentLoaded", () => {
   loadSidebarWidth();
   bindSidebarResize();
+  loadAttachmentsHeight();
+  bindAttachmentsResize();
   window.addEventListener("resize", () => {
     if (sidebarWidth !== null) {
       applySidebarWidth(sidebarWidth, false, true);
@@ -193,6 +201,80 @@ function bindSidebarResize() {
 
   handle.addEventListener("dblclick", () => {
     applySidebarWidth(SIDEBAR_DEFAULT_WIDTH, true);
+  });
+}
+
+function loadAttachmentsHeight() {
+  try {
+    const stored = Number(localStorage.getItem(ATTACHMENTS_HEIGHT_KEY));
+    attachmentsHeight = clampAttachmentsHeight(Number.isFinite(stored) ? stored : ATTACHMENTS_DEFAULT_HEIGHT);
+  } catch {
+    attachmentsHeight = ATTACHMENTS_DEFAULT_HEIGHT;
+  }
+
+  applyAttachmentsHeight(attachmentsHeight, false);
+}
+
+function clampAttachmentsHeight(height) {
+  const parsed = Number(height);
+  const value = Number.isFinite(parsed) ? parsed : ATTACHMENTS_DEFAULT_HEIGHT;
+  return Math.round(Math.max(ATTACHMENTS_MIN_HEIGHT, Math.min(ATTACHMENTS_MAX_HEIGHT, value)));
+}
+
+function applyAttachmentsHeight(height, persist = false) {
+  const clamped = clampAttachmentsHeight(height);
+  attachmentsHeight = clamped;
+  document.documentElement.style.setProperty("--attachments-height", `${clamped}px`);
+
+  if (persist) {
+    localStorage.setItem(ATTACHMENTS_HEIGHT_KEY, String(clamped));
+  }
+
+  return clamped;
+}
+
+// Dragging the handle grows the panel upward (shrinking the editor above
+// it), so the height delta is the inverse of the pointer's vertical delta.
+function bindAttachmentsResize() {
+  const handle = $id("attachments-resizer");
+  if (!handle || handle.dataset.bound === "true") return;
+  handle.dataset.bound = "true";
+
+  let dragging = false;
+  let startY = 0;
+  let startHeight = ATTACHMENTS_DEFAULT_HEIGHT;
+
+  const stopDragging = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.documentElement.classList.remove("resizing-attachments");
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", stopDragging);
+    document.removeEventListener("pointercancel", stopDragging);
+    applyAttachmentsHeight(attachmentsHeight, true);
+  };
+
+  const onPointerMove = (event) => {
+    if (!dragging) return;
+    applyAttachmentsHeight(startHeight - (event.clientY - startY), false);
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+
+    dragging = true;
+    startY = event.clientY;
+    startHeight = attachmentsHeight ?? ATTACHMENTS_DEFAULT_HEIGHT;
+
+    document.documentElement.classList.add("resizing-attachments");
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", stopDragging);
+    document.addEventListener("pointercancel", stopDragging);
+  });
+
+  handle.addEventListener("dblclick", () => {
+    applyAttachmentsHeight(ATTACHMENTS_DEFAULT_HEIGHT, true);
   });
 }
 
@@ -1215,6 +1297,7 @@ async function finalizeAttachment(attachment, { forceAttachmentPanel = false } =
 
 function renderAttachments() {
   const panel = $id("attachments-panel");
+  const resizer = $id("attachments-resizer");
   const list = $id("attachments-list");
   const title = $id("attachments-title");
   if (!panel || !list || !title) return;
@@ -1224,31 +1307,35 @@ function renderAttachments() {
 
   if (files.length === 0) {
     panel.style.display = "none";
+    if (resizer) resizer.style.display = "none";
     list.innerHTML = "";
     return;
   }
 
   panel.style.display = "";
+  if (resizer) resizer.style.display = "";
   title.textContent = `📎 Attachments (${files.length})`;
 
   list.innerHTML = files
     .map(
       (a) => `
-    <div class="attachment-chip" data-id="${escapeHtml(a.id)}">
+    <div class="attachment-chip" data-id="${escapeHtml(a.id)}" title="Click to open — ${escapeHtml(a.name)}">
       <span class="ac-icon">${attachmentIcon(a.mime_type)}</span>
-      <span class="ac-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
+      <span class="ac-name">${escapeHtml(a.name)}</span>
       <span class="ac-size">${formatFileSize(a.size)}</span>
-      <button class="ac-open" data-id="${escapeHtml(a.id)}" title="Open">↗</button>
       <button class="ac-remove" data-id="${escapeHtml(a.id)}" title="Remove">✕</button>
     </div>`
     )
     .join("");
 
-  list.querySelectorAll(".ac-open").forEach((btn) => {
-    btn.addEventListener("click", () => openAttachment(btn.dataset.id));
+  list.querySelectorAll(".attachment-chip").forEach((chip) => {
+    chip.addEventListener("click", () => openAttachment(chip.dataset.id));
   });
   list.querySelectorAll(".ac-remove").forEach((btn) => {
-    btn.addEventListener("click", () => removeAttachment(btn.dataset.id));
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeAttachment(btn.dataset.id);
+    });
   });
 }
 

@@ -194,6 +194,15 @@ html.resizing-sidebar * {
   user-select: none !important;
 }
 
+html.resizing-attachments {
+  cursor: row-resize;
+  user-select: none;
+}
+
+html.resizing-attachments * {
+  user-select: none !important;
+}
+
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 #sidebar {
   width:var(--sidebar-width, 270px);
@@ -432,33 +441,57 @@ html.resizing-sidebar * {
 .dropzone-icon { font-size:32px; }
 
 /* Attachments panel (non-image files) */
+#attachments-resizer {
+  height:6px; flex:0 0 6px;
+  background:transparent; cursor:row-resize;
+  position:relative; touch-action:none;
+}
+#attachments-resizer::before {
+  content:""; position:absolute; inset:2px 0;
+  background:transparent; transition:background var(--transition);
+}
+#attachments-resizer::after {
+  content:""; position:absolute; left:0; right:0; top:50%;
+  height:1px; transform:translateY(-50%);
+  background:var(--border); transition:background var(--transition), height var(--transition);
+}
+#attachments-resizer:hover::after,
+#attachments-resizer:active::after { background:var(--accent); height:2px; }
+
 #attachments-panel {
+  display:flex; flex-direction:column;
+  height:var(--attachments-height, 92px);
   border-top:1px solid var(--border); background:var(--bg-surface);
-  flex-shrink:0; max-height:120px; overflow-y:auto;
+  flex-shrink:0; overflow:hidden;
 }
 #attachments-header {
   display:flex; align-items:center; justify-content:space-between;
-  padding:6px 14px; position:sticky; top:0; background:var(--bg-surface);
+  padding:6px 14px; flex-shrink:0; background:var(--bg-surface);
 }
 #attachments-title { font-size:11px; color:var(--text-muted); font-weight:600; }
-#attachments-list { display:flex; flex-direction:column; gap:4px; padding:0 14px 8px; }
+#attachments-list {
+  display:flex; flex-flow:row wrap; align-content:flex-start;
+  gap:6px; padding:0 14px 8px; overflow-y:auto; flex:1;
+}
 .attachments-empty { font-size:11px; color:var(--text-muted); padding-bottom:6px; }
 .attachment-chip {
   display:flex; align-items:center; gap:8px;
   padding:5px 8px; background:var(--bg-raised);
   border:1px solid var(--border); border-radius:var(--radius-sm);
+  flex:0 1 auto; max-width:220px; height:fit-content;
+  cursor:pointer; transition:border-color var(--transition), background var(--transition);
 }
+.attachment-chip:hover { border-color:var(--accent); background:var(--bg-hover); }
 .ac-icon { font-size:14px; flex-shrink:0; }
 .ac-name {
-  flex:1; min-width:0; font-size:12px; color:var(--text-primary);
+  min-width:0; font-size:12px; color:var(--text-primary);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 .ac-size { font-size:11px; color:var(--text-muted); flex-shrink:0; }
-.ac-open, .ac-remove {
+.ac-remove {
   background:none; border:none; cursor:pointer; flex-shrink:0;
   color:var(--text-muted); font-size:13px; padding:2px 4px; line-height:1;
 }
-.ac-open:hover { color:var(--accent); }
 .ac-remove:hover { color:var(--danger); }
 
 /* Metadata panel */
