@@ -79,6 +79,14 @@
     </div>
 
     <div class="form-group">
+      <label class="form-label">Type</label>
+      <div class="mode-toggle" id="create-mode-toggle">
+        <button type="button" class="mode-toggle-btn active" data-mode="journal">📔 Journal</button>
+        <button type="button" class="mode-toggle-btn" data-mode="general">📝 General notes</button>
+      </div>
+    </div>
+
+    <div class="form-group">
       <label class="form-label">Save Location</label>
       <div class="form-row">
         <input class="form-input" id="create-path" readonly placeholder="Choose a folder…"/>
@@ -300,6 +308,13 @@
       <div class="form-group">
         <label class="form-label">Journal Name</label>
         <input class="form-input" id="settings-journal-name" autocomplete="off"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Type</label>
+        <div class="mode-toggle" id="settings-mode-toggle">
+          <button type="button" class="mode-toggle-btn" data-mode="journal">📔 Journal</button>
+          <button type="button" class="mode-toggle-btn" data-mode="general">📝 General notes</button>
+        </div>
       </div>
     </div>
 

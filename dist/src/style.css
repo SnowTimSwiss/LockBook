@@ -100,6 +100,19 @@ body {
 .form-row .form-input { flex:1; min-width:0; }
 .form-row .btn { width:auto; flex-shrink:0; }
 
+.mode-toggle {
+  display:flex; border:1px solid var(--border); border-radius:var(--radius-sm);
+  overflow:hidden;
+}
+.mode-toggle-btn {
+  flex:1; padding:9px 10px; border:none; background:var(--bg-base);
+  color:var(--text-secondary); font-size:13px; cursor:pointer;
+  transition:background var(--transition), color var(--transition);
+}
+.mode-toggle-btn + .mode-toggle-btn { border-left:1px solid var(--border); }
+.mode-toggle-btn.active { background:var(--accent); color:#fff; }
+.mode-toggle-btn:hover:not(.active) { background:var(--bg-hover); }
+
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn {
   padding:9px 18px; border:none; border-radius:var(--radius-sm);

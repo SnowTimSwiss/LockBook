@@ -441,10 +441,51 @@ async function openRecentJournal(path) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  JOURNAL MODE (journal ↔ general)
+// ═══════════════════════════════════════════════════════════════
+
+// "journal" enables diary features (date-as-title, mood); "general" is plain
+// notes. Used both for the active journal and for the mode picker shared by
+// the create screen and settings modal.
+function getJournalMode() {
+  return currentJournal?.metadata?.mode === "general" ? "general" : "journal";
+}
+
+function setModeToggleValue(containerId, mode) {
+  document.querySelectorAll(`#${containerId} .mode-toggle-btn`).forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
+}
+
+function getModeToggleValue(containerId) {
+  return document.querySelector(`#${containerId} .mode-toggle-btn.active`)?.dataset.mode === "general"
+    ? "general"
+    : "journal";
+}
+
+function bindModeToggle(containerId) {
+  document.querySelectorAll(`#${containerId} .mode-toggle-btn`).forEach((btn) => {
+    btn.addEventListener("click", () => setModeToggleValue(containerId, btn.dataset.mode));
+  });
+}
+
+// Shows/hides the mood picker and date-as-title button per the active
+// journal's mode — both are diary-only features.
+function applyModeUi() {
+  const isGeneral = getJournalMode() === "general";
+  const mood = $id("mood-select");
+  const dateBtn = $id("btn-date-title");
+  if (mood) mood.style.display = isGeneral ? "none" : "";
+  if (dateBtn) dateBtn.style.display = isGeneral ? "none" : "";
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  CREATE SCREEN
 // ═══════════════════════════════════════════════════════════════
 
 function bindCreateScreen() {
+  bindModeToggle("create-mode-toggle");
+
   // Browse folder
   $id("create-browse-btn")?.addEventListener("click", async () => {
     const dir = await window.__TAURI__.dialog.open({ directory: true });
@@ -534,6 +575,7 @@ async function doCreateJournal() {
         modified: new Date().toISOString(),
         app: "Lockbook",
         version: "2.0",
+        mode: getModeToggleValue("create-mode-toggle"),
       },
     };
 
@@ -746,6 +788,8 @@ function bindJournalUI() {
 }
 
 function bindSettingsUI() {
+  bindModeToggle("settings-mode-toggle");
+
   $id("btn-settings")?.addEventListener("click", openSettingsModal);
   $id("settings-close-btn")?.addEventListener("click", closeSettingsModal);
   $id("settings-cancel-btn")?.addEventListener("click", closeSettingsModal);
@@ -767,6 +811,7 @@ function openSettingsModal() {
 
   clearSettingsError();
   $id("settings-journal-name").value = getJournalDisplayName();
+  setModeToggleValue("settings-mode-toggle", getJournalMode());
   $id("settings-current-password").value = "";
   $id("settings-new-password").value = "";
   $id("settings-confirm-password").value = "";
@@ -824,6 +869,7 @@ async function saveSettings() {
       currentJournal.metadata = {};
     }
     currentJournal.metadata.name = name;
+    currentJournal.metadata.mode = getModeToggleValue("settings-mode-toggle");
     currentJournal.metadata.modified = new Date().toISOString();
     normalizeJournalData();
 
@@ -851,6 +897,8 @@ async function saveSettings() {
     addToRecent(currentFilePath, name);
     updateMetadata();
     updateTitleSurfaces();
+    applyModeUi();
+    renderEntryList();
     closeSettingsModal();
   } catch (err) {
     currentPassword = previousPassword;
@@ -868,6 +916,7 @@ function enterJournalUI() {
   // Normalize journal data to ensure all entries have required fields
   normalizeJournalData();
 
+  applyModeUi();
   showScreen("journal-ui");
   applySidebarWidth(sidebarWidth ?? SIDEBAR_DEFAULT_WIDTH, false, true);
   renderEntryList();
@@ -891,13 +940,15 @@ function renderEntryList() {
     return;
   }
 
+  const showMood = getJournalMode() === "journal";
+
   container.innerHTML = entries
     .map(
       (e) => `
     <div class="entry-item ${e.id === activeEntryId ? "active" : ""}" data-id="${e.id}">
       <div class="ei-title">${escapeHtml(e.title || "(Kein Titel)")}</div>
       <div class="ei-meta">
-        ${e.mood ? `<span class="ei-mood">${e.mood}</span>` : ""}
+        ${showMood && e.mood ? `<span class="ei-mood">${e.mood}</span>` : ""}
         <span class="ei-date">${formatEntryDate(e.timestamp)}</span>
       </div>
       ${e.tags?.length ? `<div class="ei-tags">${e.tags.map((t) => `<span class="tag-badge">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
@@ -1361,7 +1412,9 @@ function renderAttachments() {
   if (!panel || !list || !title) return;
 
   const entry = getActiveEntry();
-  const files = (entry?.attachments || []).filter((a) => !isImageMime(a.mime_type));
+  const files = (entry?.attachments || []).filter(
+    (a) => !isImageMime(a.mime_type) || a.placement === "panel"
+  );
 
   if (files.length === 0) {
     panel.style.display = "none";
@@ -2033,6 +2086,9 @@ function normalizeJournalData() {
   if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
   if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
   if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.2.1";
+  if (currentJournal.metadata.mode !== "journal" && currentJournal.metadata.mode !== "general") {
+    currentJournal.metadata.mode = "journal";
+  }
   if (!currentJournal.version) currentJournal.version = "1.0";
 
   return currentJournal;
@@ -2273,13 +2329,15 @@ function renderSearchResults(results, query) {
     return;
   }
 
+  const showMood = getJournalMode() === "journal";
+
   container.innerHTML = results
     .map(
       (e) => `
     <div class="entry-item" data-id="${e.id}">
       <div class="ei-title">${highlightQuery(e.title || "(Kein Titel)", query)}</div>
       <div class="ei-meta">
-        ${e.mood ? `<span class="ei-mood">${e.mood}</span>` : ""}
+        ${showMood && e.mood ? `<span class="ei-mood">${e.mood}</span>` : ""}
         <span class="ei-date">${formatEntryDate(e.timestamp)}</span>
       </div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
