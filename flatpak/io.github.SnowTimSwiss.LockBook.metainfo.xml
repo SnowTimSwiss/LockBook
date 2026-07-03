@@ -20,6 +20,18 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.0.0" date="2026-07-03">
+      <description>
+        <p>A big rewrite of the writing and reading experience.</p>
+        <ul>
+          <li>New rich-text editor: format as you type instead of switching between Markdown source and preview.</li>
+          <li>Inline images can be resized directly in the text.</li>
+          <li>Journals can be set to "General notes" mode, which hides the diary-only mood/date features.</li>
+          <li>Optional auto-lock after a period of inactivity.</li>
+          <li>Existing v1.3.0 journals open and convert automatically; nothing is changed on disk until you save.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.3.0" date="2026-06-29">
       <description>
         <p>TimENC is now bundled directly into Lockbook.</p>

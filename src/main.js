@@ -37,6 +37,13 @@ const ATTACHMENTS_MAX_HEIGHT = 320;
 // resolvePasteImageChoice().
 const PASTE_IMAGE_PREF_KEY = "lockbook_paste_image_pref";
 
+// Auto-lock: minutes of inactivity before the open journal is locked (0 = off).
+// App-wide preference (not per-journal), so it applies before any journal is open.
+const AUTO_LOCK_KEY = "lockbook_autolock_minutes";
+const AUTO_LOCK_DEFAULT_MINUTES = 5;
+let autoLockMinutes = AUTO_LOCK_DEFAULT_MINUTES;
+let autoLockTimer = null;
+
 // Matches `![alt](attachment:<id> "width=<px>")` — the "width" part is optional.
 const ATTACHMENT_IMG_SOURCE = String.raw`!\[([^\]]*)\]\(attachment:([\w-]+)(?:\s+"width=(\d+)")?\)`;
 
@@ -59,6 +66,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   loadRecentJournals();
+  loadAutoLockMinutes();
+  bindAutoLockActivity();
   scheduleTimEncCheck();
   bindWelcomeButtons();
   bindCreateScreen();
@@ -790,6 +799,12 @@ function bindJournalUI() {
 function bindSettingsUI() {
   bindModeToggle("settings-mode-toggle");
 
+  // Auto-lock applies immediately — it's an app-wide preference (localStorage),
+  // not tied to the journal-name/password "Save Settings" flow below.
+  $id("settings-autolock")?.addEventListener("change", () => {
+    setAutoLockMinutes(Number($id("settings-autolock").value) || 0);
+  });
+
   $id("btn-settings")?.addEventListener("click", openSettingsModal);
   $id("settings-close-btn")?.addEventListener("click", closeSettingsModal);
   $id("settings-cancel-btn")?.addEventListener("click", closeSettingsModal);
@@ -812,6 +827,8 @@ function openSettingsModal() {
   clearSettingsError();
   $id("settings-journal-name").value = getJournalDisplayName();
   setModeToggleValue("settings-mode-toggle", getJournalMode());
+  const autolockSelect = $id("settings-autolock");
+  if (autolockSelect) autolockSelect.value = String(autoLockMinutes);
   $id("settings-current-password").value = "";
   $id("settings-new-password").value = "";
   $id("settings-confirm-password").value = "";
@@ -922,6 +939,7 @@ function enterJournalUI() {
   renderEntryList();
   updateMetadata();
   startAutoSave();
+  resetAutoLockTimer();
 }
 
 function renderEntryList() {
@@ -2033,6 +2051,91 @@ async function doAutoSave() {
   }
 }
 
+// ── Auto-Lock ──
+function loadAutoLockMinutes() {
+  const stored = Number(localStorage.getItem(AUTO_LOCK_KEY));
+  autoLockMinutes = Number.isFinite(stored) && stored >= 0 ? stored : AUTO_LOCK_DEFAULT_MINUTES;
+}
+
+function setAutoLockMinutes(minutes) {
+  autoLockMinutes = Number.isFinite(minutes) && minutes >= 0 ? minutes : 0;
+  localStorage.setItem(AUTO_LOCK_KEY, String(autoLockMinutes));
+  resetAutoLockTimer();
+}
+
+// 0 disables auto-lock. Any tracked user activity restarts the countdown
+// (see bindAutoLockActivity); the timer itself only runs while a journal is open.
+function resetAutoLockTimer() {
+  clearTimeout(autoLockTimer);
+  autoLockTimer = null;
+  if (!currentJournal || !autoLockMinutes) return;
+  autoLockTimer = setTimeout(lockJournal, autoLockMinutes * 60000);
+}
+
+function bindAutoLockActivity() {
+  ["mousemove", "mousedown", "keydown", "wheel", "touchstart"].forEach((evt) => {
+    document.addEventListener(evt, resetAutoLockTimer, { passive: true });
+  });
+}
+
+// Saves (if dirty) and drops back to the password-entry screen, clearing the
+// decrypted journal from both frontend state and the Rust-side JournalState.
+// Unlike closeJournal(), the file path/keyfile are kept so re-unlocking is a
+// single password entry instead of browsing for the file again.
+async function lockJournal() {
+  if (!currentJournal || !currentFilePath || !currentPassword) return;
+
+  if (isDirty) {
+    const saved = await persistJournal({
+      errorPrefix: "⚠ Auto-lock: Speichern fehlgeschlagen, Journal bleibt entsperrt: ",
+    });
+    if (!saved) {
+      resetAutoLockTimer();
+      return;
+    }
+  }
+
+  clearTimeout(autoSaveTimer);
+  if (window._autoSaveInterval) {
+    clearInterval(window._autoSaveInterval);
+    window._autoSaveInterval = null;
+  }
+  clearTimeout(autoLockTimer);
+  autoLockTimer = null;
+
+  try {
+    await window.__TAURI__.invoke("close_journal");
+  } catch (err) {
+    console.warn("close_journal failed:", err);
+  }
+
+  const path = currentFilePath;
+  const keyfile = currentKeyfile;
+
+  currentJournal = null;
+  currentPassword = null;
+  activeEntryId = null;
+  isDirty = false;
+
+  currentFilePath = path;
+  currentKeyfile = keyfile;
+
+  updateTitleSurfaces();
+  showEmptyState();
+
+  const pwInput = $id("lock-password");
+  if (pwInput) pwInput.value = "";
+  const kfInput = $id("lock-keyfile");
+  if (kfInput) kfInput.value = keyfile || "";
+  const lockMode = $id("lock-mode");
+  if (lockMode) lockMode.textContent = "🔒 Auto-locked";
+  const lockHint = $id("lock-file-hint");
+  if (lockHint) lockHint.textContent = path.split(/[\\/]/).pop();
+  const lockErr = $id("lock-error");
+  if (lockErr) lockErr.textContent = "";
+  showScreen("lock-screen");
+}
+
 function syncActiveEntry() {
   if (!activeEntryId) return;
   const entry = currentJournal.entries.find((e) => e.id === activeEntryId);
@@ -2198,6 +2301,8 @@ async function closeJournal() {
     clearInterval(window._autoSaveInterval);
     window._autoSaveInterval = null;
   }
+  clearTimeout(autoLockTimer);
+  autoLockTimer = null;
 
   try {
     await window.__TAURI__.invoke("close_journal");
