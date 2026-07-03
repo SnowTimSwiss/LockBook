@@ -1,22 +1,27 @@
+pub mod container;
 pub mod temp;
 
 use std::path::{Path, PathBuf};
 
-use timenc::{DecryptOptions, EncryptOptions};
+use timenc::DecryptOptions;
 
 use crate::error::{JournalError, Result};
 use crate::journal::JournalData;
 use temp::{SecurePassword, SecureTempDir};
 
-const JOURNAL_JSON_NAME: &str = "journal.json";
 /// Name of the in-temp copy of the encrypted journal used during decryption.
 const ENC_COPY_NAME: &str = "journal.enc";
 
-/// Decrypt a `.lbook` or legacy `.timenc-journal` file and deserialize the contained `JournalData`.
+/// Decrypt a journal file into a [`JournalData`], detecting the format.
 ///
-/// TimENC's `decrypt` securely deletes its input file on success, so we never
-/// hand it the user's real journal: we decrypt a throwaway copy inside a temp
-/// directory and leave the original untouched.
+/// Two formats coexist on disk:
+/// * **v2 `LBOOK2` container** — the current format written by [`save_journal`].
+/// * **legacy TimENC file** — how v1.3.0 (still public!) wrote journals; a single
+///   JSON document encrypted as one TimENC blob.
+///
+/// We branch on the first bytes of the file: a container starts with `LBOOK2`,
+/// everything else is handed to the TimENC path. Opening is read-only either way,
+/// so a v1 file stays v1 on disk until the user saves (which writes v2).
 pub fn load_journal(
     journal_path: &str,
     password: &str,
@@ -24,10 +29,34 @@ pub fn load_journal(
 ) -> Result<JournalData> {
     let _pw = SecurePassword::new(password.to_string());
 
-    if !Path::new(journal_path).exists() {
+    let path = Path::new(journal_path);
+    if !path.exists() {
         return Err(JournalError::FileNotFound(journal_path.to_string()));
     }
 
+    // Peek the magic bytes to pick the format. A container starts with "LBOOK2".
+    let mut magic = [0u8; 6];
+    if let Ok(mut f) = std::fs::File::open(path) {
+        use std::io::Read as _;
+        let _ = f.read(&mut magic);
+    }
+    if container::is_container(&magic) {
+        return container::read_container(path, password, keyfile);
+    }
+
+    load_timenc_journal(journal_path, password, keyfile)
+}
+
+/// Decrypt a legacy TimENC journal file (v1.3.0 format).
+///
+/// TimENC's `decrypt` securely deletes its input file on success, so we never
+/// hand it the user's real journal: we decrypt a throwaway copy inside a temp
+/// directory and leave the original untouched.
+fn load_timenc_journal(
+    journal_path: &str,
+    password: &str,
+    keyfile: Option<&str>,
+) -> Result<JournalData> {
     let tmp = SecureTempDir::new()?;
     let enc_copy = tmp.path().join(ENC_COPY_NAME);
     std::fs::copy(journal_path, &enc_copy)?;
@@ -57,19 +86,22 @@ pub fn load_journal(
     Ok(data)
 }
 
-/// Serialize `JournalData` to JSON, encrypt it with TimENC, and write to
-/// `journal_path`.
+/// Serialize `JournalData`, write it to `journal_path` as a v2 `LBOOK2`
+/// container (see [`container`]), and verify it round-trips before committing.
 ///
-/// The write is **crash-safe**: TimENC's `encrypt` truncates its output file
-/// before streaming into it, so encrypting straight onto the user's journal
-/// would destroy the original the moment a save starts — and a crash, kill, or
-/// window-close mid-write would leave a truncated file that can no longer be
-/// decrypted (surfacing as a bogus "wrong password/keyfile" error).
-///
-/// Instead we encrypt to a sibling temp file, keep a `.bak` of the previous
-/// version, and only then atomically `rename` the finished file over the
-/// target. `rename` on the same filesystem is atomic, so the journal is always
+/// The write is **crash-safe**: the container is assembled entirely in memory
+/// and streamed to a sibling staging file, a `.bak` of the previous version is
+/// kept, and only then is the finished file atomically `rename`d over the target.
+/// `rename` on the same filesystem is atomic, so the journal on disk is always
 /// either the complete old version or the complete new one — never a partial.
+/// (This also means no plaintext is ever written to disk, unlike the legacy
+/// TimENC path which staged a plaintext JSON copy.)
+///
+/// **Round-trip safety net:** before the atomic rename, the freshly-written
+/// staging container is decrypted again and compared byte-for-byte against the
+/// input. If they differ, the save aborts and the original file is left
+/// untouched — so a bug in the container format can at worst *refuse* to save,
+/// never corrupt or lose data.
 pub fn save_journal(
     journal_path: &str,
     password: &str,
@@ -78,52 +110,39 @@ pub fn save_journal(
 ) -> Result<()> {
     let _pw = SecurePassword::new(password.to_string());
 
-    let tmp = SecureTempDir::new()?;
-
-    // Write plaintext JSON to the temp directory; TimENC encrypts it to the
-    // staging path and securely deletes this plaintext copy on success.
-    let json_bytes = data.to_json()?;
-    let json_path = tmp.path().join(JOURNAL_JSON_NAME);
-    std::fs::write(&json_path, &json_bytes)?;
-
     let target = PathBuf::from(journal_path);
     // Stage the encrypted output next to the target so the final rename stays on
     // the same filesystem (a cross-device rename is not atomic and would fall
     // back to a copy).
     let staging = staging_path_for(&target);
 
-    let encrypt_result = timenc::encrypt(
-        &json_path,
-        EncryptOptions {
-            password: password.to_string(),
-            keyfile_path: keyfile.map(PathBuf::from),
-            output_path: staging.clone(),
-            // Compress before encrypting. The journal is a single JSON document
-            // whose attachments are base64-embedded; base64 inflates binary data
-            // by ~33 %, and zstd recovers almost all of that overhead on top of
-            // shrinking the (highly compressible) HTML/text. Doing it here is a
-            // net win with no format-compatibility cost: TimENC records the
-            // `compressed` flag in its v4 metadata header and `decrypt`
-            // transparently decompresses, so both older uncompressed journals and
-            // these new compressed ones open on any build.
-            //
-            // Safe against CRIME/BREACH-style leaks: those need an adaptive online
-            // oracle mixing attacker-chosen and secret data into one compressed,
-            // transmitted stream. This file is local, non-transmitted, and holds
-            // only the user's own data — no such oracle exists.
-            compress: true,
-        },
-    )
-    .map_err(|e| JournalError::EncryptionFailed(e.to_string()));
-
-    // Defensive: TimENC removes the plaintext on success, but if anything left
-    // it behind, overwrite it before the temp dir is dropped.
-    secure_delete_file(&json_path);
-
-    if let Err(e) = encrypt_result {
-        // The original journal was never touched; just clean up the staging file.
+    if let Err(e) = container::write_container(&staging, password, keyfile, data) {
+        // The original journal was never touched; just clean up any partial staging.
         let _ = std::fs::remove_file(&staging);
         return Err(e);
+    }
+
+    // Round-trip verification: re-read the staging container and confirm it
+    // decrypts back to exactly the data we were asked to save. Both sides are
+    // compared via canonical JSON, which is deterministic for our data model.
+    match container::read_container(&staging, password, keyfile) {
+        Ok(reloaded) => {
+            let want = data.to_json()?;
+            let got = reloaded.to_json()?;
+            if want != got {
+                let _ = std::fs::remove_file(&staging);
+                return Err(JournalError::EncryptionFailed(
+                    "container round-trip verification failed; save aborted, original file kept"
+                        .to_string(),
+                ));
+            }
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&staging);
+            return Err(JournalError::EncryptionFailed(format!(
+                "container round-trip verification failed ({e}); save aborted, original file kept"
+            )));
+        }
     }
 
     // Keep a hidden rolling backup of the previous version next to the journal.

@@ -32,6 +32,9 @@ dirs = "5.0"
 base64 = "0.22"
 # Encodes raw RGBA clipboard images to PNG before embedding them as attachments.
 png = "0.17"
+# Compresses the container's text/metadata index before encryption. Same major as
+# TimENC's own zstd dependency so both crates share a single build.
+zstd = "0.13"
 zeroize = { version = "1.7", features = ["derive"] }
 log = "0.4"
 env_logger = "0.10"

@@ -2121,6 +2121,7 @@ dependencies = [
  "timenc",
  "uuid",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
