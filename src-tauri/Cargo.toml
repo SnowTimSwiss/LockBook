@@ -26,6 +26,7 @@ thiserror = "1.0"
 # regenerate flatpak/cargo-sources.json so this git dep is vendored offline.
 timenc = { git = "https://github.com/SnowTimSwiss/TimENC.git", rev = "6e4d631b9c4427aade728a53ff14432a9a309cb3", default-features = false }
 dirs = "5.0"
+base64 = "0.22"
 zeroize = { version = "1.7", features = ["derive"] }
 log = "0.4"
 env_logger = "0.10"

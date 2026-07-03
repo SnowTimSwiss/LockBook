@@ -27,6 +27,9 @@ const SIDEBAR_DEFAULT_WIDTH = 270;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
 
+// Matches `![alt](attachment:<id> "width=<px>")` — the "width" part is optional.
+const ATTACHMENT_IMG_SOURCE = String.raw`!\[([^\]]*)\]\(attachment:([\w-]+)(?:\s+"width=(\d+)")?\)`;
+
 // ── DOM refs ──
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -540,6 +543,10 @@ function bindJournalUI() {
   // Emoji picker
   $id("btn-emoji-picker")?.addEventListener("click", toggleEmojiPicker);
 
+  // Attachments
+  bindAttachmentButtons();
+  bindAttachmentResize();
+
   // Delete entry
   $id("delete-entry-btn")?.addEventListener("click", deleteCurrentEntry);
 
@@ -793,6 +800,7 @@ function selectEntry(id) {
   $id("mood-select").value = entry.mood || "neutral";
 
   renderTags();
+  renderAttachments();
   updateWordCount();
   updateMetadata();
   updateTitleSurfaces();
@@ -915,12 +923,253 @@ function renderTags() {
   });
 }
 
+// ── Attachments ──
+
+function isImageMime(mime) {
+  return typeof mime === "string" && mime.startsWith("image/");
+}
+
+function isValidAttachment(a) {
+  return (
+    a &&
+    typeof a === "object" &&
+    typeof a.id === "string" &&
+    typeof a.name === "string" &&
+    typeof a.mime_type === "string" &&
+    typeof a.data === "string"
+  );
+}
+
+// Images are represented only by their inline `attachment:` reference in the
+// content text — if that reference is deleted from the text, the backing
+// attachment is orphaned and dropped so it doesn't bloat the journal forever.
+// Non-image attachments live in the attachments panel and are removed there.
+function pruneOrphanedImageAttachments(content, attachments) {
+  if (!attachments.length) return attachments;
+  const referenced = new Set();
+  const re = new RegExp(ATTACHMENT_IMG_SOURCE, "g");
+  let m;
+  while ((m = re.exec(content || ""))) referenced.add(m[2]);
+  return attachments.filter((a) => !isImageMime(a.mime_type) || referenced.has(a.id));
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentIcon(mime) {
+  if (!mime) return "📄";
+  if (mime.startsWith("audio/")) return "🎵";
+  if (mime.startsWith("video/")) return "🎬";
+  if (mime === "application/pdf") return "📕";
+  if (mime === "application/zip") return "🗜";
+  if (mime.startsWith("text/")) return "📝";
+  return "📄";
+}
+
+function escapeMdText(text) {
+  const cleaned = String(text || "").replace(/[[\]\n]/g, " ").trim();
+  return cleaned || "attachment";
+}
+
+function insertAtCursor(text) {
+  const textarea = $id("content-editor");
+  if (!textarea) return;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const value = textarea.value;
+  textarea.value = value.slice(0, start) + text + value.slice(end);
+  textarea.selectionStart = textarea.selectionEnd = start + text.length;
+  textarea.focus();
+}
+
+function loadImageDimensions(attachment) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve({ width: null, height: null });
+    img.src = `data:${attachment.mime_type};base64,${attachment.data}`;
+  });
+}
+
+function bindAttachmentButtons() {
+  $id("btn-insert-image")?.addEventListener("click", handleInsertImage);
+  $id("btn-attach-file")?.addEventListener("click", handleAttachFile);
+  $id("btn-attach-file-2")?.addEventListener("click", handleAttachFile);
+}
+
+function handleInsertImage() {
+  return pickAndAttach([{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] }]);
+}
+
+function handleAttachFile() {
+  return pickAndAttach(null);
+}
+
+// Shared by both toolbar buttons: images are inserted inline at the cursor
+// (and don't show up in the attachments panel); any other file type is
+// simply added to entry.attachments and rendered in the panel.
+async function pickAndAttach(filters) {
+  const entry = getActiveEntry();
+  if (!entry) return;
+
+  const path = await window.__TAURI__.dialog.open(filters ? { filters } : {});
+  if (!path) return;
+
+  try {
+    const attachment = await window.__TAURI__.invoke("read_attachment_file", { path });
+
+    if (isImageMime(attachment.mime_type)) {
+      const { width, height } = await loadImageDimensions(attachment);
+      attachment.width = width;
+      attachment.height = height;
+      const displayWidth = Math.min(width || 480, 480);
+
+      if (!Array.isArray(entry.attachments)) entry.attachments = [];
+      entry.attachments.push(attachment);
+      insertAtCursor(`![${escapeMdText(attachment.name)}](attachment:${attachment.id} "width=${displayWidth}")`);
+    } else {
+      if (!Array.isArray(entry.attachments)) entry.attachments = [];
+      entry.attachments.push(attachment);
+      showStatus(`Angehängt: ${attachment.name}`, 3000);
+    }
+
+    markDirty();
+    renderAttachments();
+    if ($id("content-preview")?.classList.contains("active")) renderMarkdownPreview();
+  } catch (err) {
+    showStatus("⚠ Anhängen fehlgeschlagen: " + err, 5000);
+  }
+}
+
+function renderAttachments() {
+  const list = $id("attachments-list");
+  const title = $id("attachments-title");
+  if (!list || !title) return;
+
+  const entry = getActiveEntry();
+  const files = (entry?.attachments || []).filter((a) => !isImageMime(a.mime_type));
+
+  title.textContent = `📎 Attachments (${files.length})`;
+
+  if (files.length === 0) {
+    list.innerHTML = `<div class="attachments-empty">No files attached</div>`;
+    return;
+  }
+
+  list.innerHTML = files
+    .map(
+      (a) => `
+    <div class="attachment-chip" data-id="${escapeHtml(a.id)}">
+      <span class="ac-icon">${attachmentIcon(a.mime_type)}</span>
+      <span class="ac-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
+      <span class="ac-size">${formatFileSize(a.size)}</span>
+      <button class="ac-open" data-id="${escapeHtml(a.id)}" title="Open">↗</button>
+      <button class="ac-remove" data-id="${escapeHtml(a.id)}" title="Remove">✕</button>
+    </div>`
+    )
+    .join("");
+
+  list.querySelectorAll(".ac-open").forEach((btn) => {
+    btn.addEventListener("click", () => openAttachment(btn.dataset.id));
+  });
+  list.querySelectorAll(".ac-remove").forEach((btn) => {
+    btn.addEventListener("click", () => removeAttachment(btn.dataset.id));
+  });
+}
+
+async function openAttachment(id) {
+  const entry = getActiveEntry();
+  const attachment = entry?.attachments?.find((a) => a.id === id);
+  if (!attachment) return;
+
+  try {
+    const path = await window.__TAURI__.invoke("write_temp_attachment", {
+      name: attachment.name,
+      dataBase64: attachment.data,
+    });
+    await window.__TAURI__.shell.open(path);
+  } catch (err) {
+    showStatus("⚠ Konnte Anhang nicht öffnen: " + err, 5000);
+  }
+}
+
+function removeAttachment(id) {
+  const entry = getActiveEntry();
+  if (!entry) return;
+  const attachment = entry.attachments?.find((a) => a.id === id);
+  if (!attachment) return;
+
+  if (!confirm(`"${attachment.name}" wirklich entfernen?`)) return;
+
+  entry.attachments = (entry.attachments || []).filter((a) => a.id !== id);
+  markDirty();
+  renderAttachments();
+}
+
+// ── Drag-resize for inline images in the preview ──
+function bindAttachmentResize() {
+  const preview = $id("content-preview");
+  if (!preview || preview.dataset.resizeBound === "true") return;
+  preview.dataset.resizeBound = "true";
+
+  let dragging = null;
+
+  preview.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest(".att-resize-handle");
+    if (!handle) return;
+    const wrap = handle.closest(".att-img-wrap");
+    const img = wrap?.querySelector("img");
+    if (!wrap || !img) return;
+
+    e.preventDefault();
+    dragging = { wrap, img, startX: e.clientX, startWidth: img.getBoundingClientRect().width };
+    handle.setPointerCapture(e.pointerId);
+  });
+
+  preview.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const maxWidth = Math.max(60, preview.clientWidth - 24);
+    const newWidth = Math.max(60, Math.min(maxWidth, Math.round(dragging.startWidth + (e.clientX - dragging.startX))));
+    dragging.img.style.width = `${newWidth}px`;
+  });
+
+  const endDrag = () => {
+    if (!dragging) return;
+    const { wrap, img } = dragging;
+    dragging = null;
+
+    const newWidth = Math.round(parseFloat(img.style.width));
+    const start = Number(wrap.dataset.start);
+    const end = Number(wrap.dataset.end);
+    const alt = wrap.dataset.alt || "";
+    const attId = wrap.dataset.attId;
+    if (!attId || !Number.isFinite(start) || !Number.isFinite(end)) return;
+
+    const textarea = $id("content-editor");
+    if (!textarea) return;
+
+    const value = textarea.value;
+    const replacement = `![${alt}](attachment:${attId} "width=${newWidth}")`;
+    textarea.value = value.slice(0, start) + replacement + value.slice(end);
+
+    markDirty();
+    renderMarkdownPreview();
+  };
+
+  preview.addEventListener("pointerup", endDrag);
+  preview.addEventListener("pointercancel", endDrag);
+}
+
 // ── Markdown Preview ──
-function renderMarkdownPreview() {
-  const container = $id("content-preview");
-  if (!container) return;
-  const content = $id("content-editor")?.value || "";
-  let html = escapeHtml(content);
+
+// Applies the same lightweight markdown transforms the preview always used,
+// on a plain text segment (i.e. text with any attachment tags already cut out).
+function renderMdSegment(text) {
+  let html = escapeHtml(text);
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
   html = html.replace(/`(.+?)`/g, "<code>$1</code>");
@@ -928,7 +1177,52 @@ function renderMarkdownPreview() {
   html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
   html = html.replace(/\n/g, "<br>");
-  container.innerHTML = html;
+  return html;
+}
+
+// Splits raw content on `attachment:` image tags, running the normal markdown
+// transforms on the text in between and splicing in real <img> elements
+// (backed by the entry's attachments) at each tag. `data-start`/`data-end`
+// record the exact character range of the tag in the raw text, so the
+// drag-resize handler can rewrite precisely that occurrence later.
+function renderContentWithAttachments(content, attachments) {
+  const byId = new Map((attachments || []).map((a) => [a.id, a]));
+  const re = new RegExp(ATTACHMENT_IMG_SOURCE, "g");
+
+  let out = "";
+  let lastIndex = 0;
+  let match;
+
+  while ((match = re.exec(content))) {
+    const [full, alt, id, widthStr] = match;
+    out += renderMdSegment(content.slice(lastIndex, match.index));
+
+    const attachment = byId.get(id);
+    if (attachment && isImageMime(attachment.mime_type)) {
+      const width = widthStr ? parseInt(widthStr, 10) : Math.min(attachment.width || 480, 480);
+      out +=
+        `<span class="att-img-wrap" data-att-id="${escapeHtml(id)}" data-start="${match.index}" ` +
+        `data-end="${match.index + full.length}" data-alt="${escapeHtml(alt)}">` +
+        `<img src="data:${escapeHtml(attachment.mime_type)};base64,${attachment.data}" alt="${escapeHtml(alt)}" ` +
+        `style="width:${width}px" draggable="false">` +
+        `<span class="att-resize-handle" title="Drag to resize"></span></span>`;
+    } else {
+      out += `<span class="att-img-missing">🖼 ${escapeHtml(alt || "image")} (missing)</span>`;
+    }
+
+    lastIndex = match.index + full.length;
+  }
+
+  out += renderMdSegment(content.slice(lastIndex));
+  return out;
+}
+
+function renderMarkdownPreview() {
+  const container = $id("content-preview");
+  if (!container) return;
+  const content = $id("content-editor")?.value || "";
+  const attachments = getActiveEntry()?.attachments || [];
+  container.innerHTML = renderContentWithAttachments(content, attachments);
 }
 
 function updateWordCount() {
@@ -1120,16 +1414,19 @@ function normalizeMoodValue(mood) {
 
 function normalizeEntryData(entry) {
   const safeEntry = entry && typeof entry === "object" ? entry : {};
+  const content = typeof safeEntry.content === "string" ? safeEntry.content : "";
+  const attachments = Array.isArray(safeEntry.attachments)
+    ? safeEntry.attachments.filter(isValidAttachment)
+    : [];
+
   return {
     id: typeof safeEntry.id === "string" && safeEntry.id ? safeEntry.id : crypto.randomUUID(),
     timestamp: safeEntry.timestamp || new Date().toISOString(),
     title: typeof safeEntry.title === "string" ? safeEntry.title : "",
-    content: typeof safeEntry.content === "string" ? safeEntry.content : "",
+    content,
     tags: Array.isArray(safeEntry.tags) ? safeEntry.tags.filter((tag) => typeof tag === "string") : [],
     mood: normalizeMoodValue(safeEntry.mood),
-    attachments: Array.isArray(safeEntry.attachments)
-      ? safeEntry.attachments.filter((attachment) => typeof attachment === "string")
-      : [],
+    attachments: pruneOrphanedImageAttachments(content, attachments),
   };
 }
 
@@ -1292,6 +1589,26 @@ async function closeJournal() {
 }
 
 // ── Export ──
+
+// Writes an attachment's bytes into the export's `_attachments` folder
+// (once per attachment id, even if referenced multiple times) and returns
+// the path relative to the exported .md file.
+async function ensureAttachmentExported(attachment, dirPath, dirLabel, written) {
+  if (written.has(attachment.id)) return written.get(attachment.id);
+
+  const safeName = attachment.name.replace(/[\\/:]/g, "_");
+  const fileName = `${attachment.id.slice(0, 8)}_${safeName}`;
+  const relPath = `${dirLabel}/${fileName}`;
+
+  await window.__TAURI__.invoke("write_binary_file", {
+    path: `${dirPath}/${fileName}`,
+    dataBase64: attachment.data,
+  });
+
+  written.set(attachment.id, relPath);
+  return relPath;
+}
+
 async function exportMarkdown() {
   if (!currentJournal) return;
 
@@ -1299,37 +1616,68 @@ async function exportMarkdown() {
   normalizeJournalData();
 
   const name = currentJournal.metadata?.name || currentFilePath?.split(/[\\/]/).pop() || "journal";
-  let md = `# ${name}\n\n`;
-  md += `Exportiert am: ${formatDate(Date.now())}\n`;
-  md += `Eintraege: ${currentJournal.entries.length}\n\n`;
-  md += `---\n\n`;
-
-  const sorted = [...currentJournal.entries].sort(
-    (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-  );
-
-  for (const entry of sorted) {
-    md += `## ${entry.title || "(Kein Titel)"}\n\n`;
-    md += `Titel: ${entry.title || "(Kein Titel)"}\n`;
-    md += `Datum: ${formatDate(entry.timestamp)}\n`;
-    md += `Emotion: ${entry.mood || "neutral"}\n`;
-    if (entry.tags?.length) md += `Tags: ${entry.tags.map((t) => `#${t}`).join(", ")}\n\n`;
-    else md += `\n`;
-    md += `${entry.content || ""}\n\n---\n\n`;
-  }
 
   const path = await window.__TAURI__.dialog.save({
     defaultPath: `${name}.md`,
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
+  if (!path) return;
 
-  if (path) {
-    try {
-      await window.__TAURI__.invoke("write_text_file", { path, content: md });
-      showStatus("Exportiert ✓", 3000);
-    } catch (err) {
-      showStatus("⚠ Export fehlgeschlagen: " + err, 5000);
+  const attachmentsDirPath = `${path.replace(/\.md$/i, "")}_attachments`;
+  const attachmentsDirLabel = attachmentsDirPath.split(/[\\/]/).pop();
+  const written = new Map();
+
+  const sorted = [...currentJournal.entries].sort(
+    (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+  );
+
+  let md = `# ${name}\n\n`;
+  md += `Exportiert am: ${formatDate(Date.now())}\n`;
+  md += `Eintraege: ${currentJournal.entries.length}\n\n`;
+  md += `---\n\n`;
+
+  try {
+    for (const entry of sorted) {
+      md += `## ${entry.title || "(Kein Titel)"}\n\n`;
+      md += `Titel: ${entry.title || "(Kein Titel)"}\n`;
+      md += `Datum: ${formatDate(entry.timestamp)}\n`;
+      md += `Emotion: ${entry.mood || "neutral"}\n`;
+      if (entry.tags?.length) md += `Tags: ${entry.tags.map((t) => `#${t}`).join(", ")}\n\n`;
+      else md += `\n`;
+
+      let content = entry.content || "";
+      const fileAttachments = [];
+
+      for (const attachment of entry.attachments || []) {
+        const relPath = await ensureAttachmentExported(attachment, attachmentsDirPath, attachmentsDirLabel, written);
+        if (isImageMime(attachment.mime_type)) {
+          const re = new RegExp(
+            `!\\[([^\\]]*)\\]\\(attachment:${attachment.id}(?:\\s+"width=\\d+")?\\)`,
+            "g"
+          );
+          content = content.replace(re, (_, alt) => `![${alt}](${relPath})`);
+        } else {
+          fileAttachments.push({ attachment, relPath });
+        }
+      }
+
+      md += `${content}\n\n`;
+
+      if (fileAttachments.length) {
+        md += `**Anhänge:**\n\n`;
+        for (const { attachment, relPath } of fileAttachments) {
+          md += `- [${attachment.name}](${relPath}) (${formatFileSize(attachment.size)})\n`;
+        }
+        md += `\n`;
+      }
+
+      md += `---\n\n`;
     }
+
+    await window.__TAURI__.invoke("write_text_file", { path, content: md });
+    showStatus("Exportiert ✓", 3000);
+  } catch (err) {
+    showStatus("⚠ Export fehlgeschlagen: " + err, 5000);
   }
 }
 

@@ -40,6 +40,10 @@ fn main() {
             // Utility
             commands::get_app_version,
             commands::write_text_file,
+            // Attachments
+            commands::read_attachment_file,
+            commands::write_temp_attachment,
+            commands::write_binary_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TimENC Journal");

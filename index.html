@@ -205,6 +205,8 @@
           </select>
           <button class="tool-btn" id="btn-date-title" title="Use today's date as title">📅</button>
           <button class="tool-btn" id="btn-emoji-picker" title="Insert emoji (Ctrl+E)">😀</button>
+          <button class="tool-btn" id="btn-insert-image" title="Insert image">🖼</button>
+          <button class="tool-btn" id="btn-attach-file" title="Attach file">📎</button>
           <button class="tool-btn danger" id="delete-entry-btn" title="Delete entry">🗑</button>
         </div>
 
@@ -224,6 +226,15 @@
         <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative">
           <textarea id="content-editor" placeholder="Write your entry here… (Markdown supported)"></textarea>
           <div id="content-preview"></div>
+        </div>
+
+        <!-- Attachments (non-image files) -->
+        <div id="attachments-panel">
+          <div id="attachments-header">
+            <span id="attachments-title">📎 Attachments</span>
+            <button class="tb-btn" id="btn-attach-file-2" title="Attach file">+ Attach</button>
+          </div>
+          <div id="attachments-list"></div>
         </div>
 
         <!-- Metadata panel -->

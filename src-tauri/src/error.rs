@@ -26,6 +26,8 @@ pub enum JournalError {
     #[error("Entry not found: {0}")]
     EntryNotFound(String),
 
+    #[error("Attachment too large: {0} bytes (max {1} bytes)")]
+    AttachmentTooLarge(u64, u64),
 }
 
 pub type Result<T> = std::result::Result<T, JournalError>;

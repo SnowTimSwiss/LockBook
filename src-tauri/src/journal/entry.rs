@@ -19,6 +19,21 @@ impl Default for Mood {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+    /// Base64-encoded file bytes, embedded directly so attachments travel
+    /// inside the same encrypted `.lbook` blob as everything else.
+    pub data: String,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalEntry {
     pub id: String,
     pub timestamp: DateTime<Utc>,
@@ -31,7 +46,7 @@ pub struct JournalEntry {
     #[serde(default)]
     pub mood: Mood,
     #[serde(default)]
-    pub attachments: Vec<String>,
+    pub attachments: Vec<Attachment>,
 }
 
 impl JournalEntry {
