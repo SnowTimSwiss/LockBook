@@ -98,7 +98,20 @@ pub fn save_journal(
             password: password.to_string(),
             keyfile_path: keyfile.map(PathBuf::from),
             output_path: staging.clone(),
-            compress: false,
+            // Compress before encrypting. The journal is a single JSON document
+            // whose attachments are base64-embedded; base64 inflates binary data
+            // by ~33 %, and zstd recovers almost all of that overhead on top of
+            // shrinking the (highly compressible) HTML/text. Doing it here is a
+            // net win with no format-compatibility cost: TimENC records the
+            // `compressed` flag in its v4 metadata header and `decrypt`
+            // transparently decompresses, so both older uncompressed journals and
+            // these new compressed ones open on any build.
+            //
+            // Safe against CRIME/BREACH-style leaks: those need an adaptive online
+            // oracle mixing attacker-chosen and secret data into one compressed,
+            // transmitted stream. This file is local, non-transmitted, and holds
+            // only the user's own data — no such oracle exists.
+            compress: true,
         },
     )
     .map_err(|e| JournalError::EncryptionFailed(e.to_string()));
