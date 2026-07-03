@@ -15,12 +15,11 @@
 //! * one **blob** per attachment (the raw file bytes — *not* base64, *not*
 //!   re-compressed, since images are already compressed).
 //!
-//! This is what makes lazy image decryption (P5.3) possible: the master key is
-//! derived once (the expensive step) and then cheaply reused to decrypt any single
-//! blob on demand. P5.2 does not yet expose that laziness — [`read_container`]
-//! re-inflates every blob so the frontend keeps receiving a fully-populated
-//! [`JournalData`], identical to the legacy path — but the on-disk format is the
-//! final one.
+//! This is what makes **lazy image decryption** possible: [`open_session`]
+//! derives the master key once (the expensive step) and decrypts only the small
+//! index; individual blobs are then decrypted cheaply and on demand through
+//! [`ContainerSession::decrypt_blob`], without re-running Argon2 and without ever
+//! reading the whole file into memory.
 //!
 //! # Cryptography
 //!
@@ -54,7 +53,10 @@
 //! └────────────────────────────────────────────────────────────────────────┘
 //! ```
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -62,7 +64,7 @@ use timenc::crypto::{
     decrypt_chunk, derive_key, encrypt_chunk, generate_nonce, generate_salt, KEY_LEN, NONCE_SIZE,
     SALT_SIZE,
 };
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{JournalError, Result};
 use crate::journal::JournalData;
@@ -90,8 +92,8 @@ const HEADER_LEN: usize = HEADER_PREFIX_LEN + 8; // 55
 /// used to seal them. Stored inside the (authenticated) index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BlobRef {
-    /// The owning attachment's id — verified on load, and the lookup key for
-    /// on-demand decryption in P5.3.
+    /// The owning attachment's id — verified on eager load, and the lookup key
+    /// for on-demand decryption.
     id: String,
     /// Byte offset of the blob's ciphertext, relative to the blob region start.
     offset: u64,
@@ -111,6 +113,60 @@ struct ContainerIndex {
     /// Blob table, aligned 1:1 with the flattened attachment iteration order
     /// (entries in order, each entry's attachments in order).
     blobs: Vec<BlobRef>,
+}
+
+/// Location of one blob's ciphertext within the file (kept in a decrypted
+/// session for fast on-demand access).
+#[derive(Debug, Clone)]
+struct BlobLoc {
+    offset: u64,
+    enc_len: u64,
+    nonce: [u8; NONCE_SIZE],
+}
+
+/// A decrypted, in-memory handle to an open container: the master key plus the
+/// blob table, so individual attachment blobs can be decrypted on demand without
+/// re-deriving the key or reading the whole file. Dropping it zeroizes the key.
+pub struct ContainerSession {
+    path: PathBuf,
+    key: Zeroizing<[u8; KEY_LEN]>,
+    header_prefix: Vec<u8>,
+    blob_region_start: u64,
+    blobs: Vec<BlobLoc>,
+    by_id: HashMap<String, usize>,
+}
+
+impl ContainerSession {
+    /// True if a blob for `id` exists in this container.
+    pub fn has_blob(&self, id: &str) -> bool {
+        self.by_id.contains_key(id)
+    }
+
+    /// Decrypt and return the raw bytes of the attachment blob for `id`, reading
+    /// only that blob's slice from the file. No Argon2 is involved.
+    pub fn decrypt_blob(&self, id: &str) -> Result<Vec<u8>> {
+        let ord = *self
+            .by_id
+            .get(id)
+            .ok_or_else(|| JournalError::InvalidFormat(format!("unknown attachment id: {id}")))?;
+        let loc = &self.blobs[ord];
+
+        let mut f = File::open(&self.path)?;
+        f.seek(SeekFrom::Start(self.blob_region_start + loc.offset))?;
+        let mut ct = vec![0u8; loc.enc_len as usize];
+        f.read_exact(&mut ct)?;
+
+        let aad = blob_aad(&self.header_prefix, ord as u64);
+        decrypt_chunk(&self.key, &loc.nonce, &ct, &aad)
+            .map_err(|_| JournalError::DecryptionFailed("blob authentication failed".to_string()))
+    }
+
+    /// Point the session at a different file (used after a save renames the
+    /// finished staging container over the target — the bytes are identical, so
+    /// only the path changes).
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
+    }
 }
 
 /// True if `bytes` begins with the container magic.
@@ -145,13 +201,14 @@ fn read_keyfile(keyfile: Option<&str>) -> Result<Option<Vec<u8>>> {
 }
 
 /// Serialize, compress, encrypt, and write `data` to `path` as an `LBOOK2`
-/// container. No plaintext touches the disk.
+/// container, returning a [`ContainerSession`] for the just-written file. No
+/// plaintext touches the disk.
 pub fn write_container(
-    path: &std::path::Path,
+    path: &Path,
     password: &str,
     keyfile: Option<&str>,
     data: &JournalData,
-) -> Result<()> {
+) -> Result<ContainerSession> {
     let keyfile_bytes = read_keyfile(keyfile)?;
 
     let salt = generate_salt();
@@ -186,6 +243,8 @@ pub fn write_container(
     let mut index_journal = data.clone();
     let mut blob_region: Vec<u8> = Vec::new();
     let mut blob_refs: Vec<BlobRef> = Vec::new();
+    let mut blob_locs: Vec<BlobLoc> = Vec::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
     let mut ordinal: u64 = 0;
 
     for entry in &mut index_journal.entries {
@@ -199,16 +258,20 @@ pub fn write_container(
                 .map_err(|_| JournalError::EncryptionFailed("blob encryption failed".to_string()))?;
             raw.zeroize();
 
+            let offset = blob_region.len() as u64;
+            let enc_len = ct.len() as u64;
             blob_refs.push(BlobRef {
                 id: att.id.clone(),
-                offset: blob_region.len() as u64,
-                enc_len: ct.len() as u64,
+                offset,
+                enc_len,
                 nonce,
             });
+            blob_locs.push(BlobLoc { offset, enc_len, nonce });
+            by_id.insert(att.id.clone(), ordinal as usize);
             blob_region.extend_from_slice(&ct);
 
-            // Strip the blob from the index copy; the frontend still gets the real
-            // bytes back because load re-inflates from the blob region.
+            // Strip the blob from the index copy; readers re-inflate from the blob
+            // region (eagerly for verification, lazily at runtime).
             att.data = String::new();
             ordinal += 1;
         }
@@ -227,6 +290,8 @@ pub fn write_container(
     let index_ct = encrypt_chunk(key_ref, &index_nonce, &index_compressed, &index_aad(&header_prefix))
         .map_err(|_| JournalError::EncryptionFailed("index encryption failed".to_string()))?;
 
+    let blob_region_start = (HEADER_LEN + index_ct.len()) as u64;
+
     // Assemble the whole file in memory, then write ciphertext-only to disk.
     let mut out = Vec::with_capacity(HEADER_LEN + index_ct.len() + blob_region.len());
     out.extend_from_slice(&header_prefix);
@@ -235,57 +300,59 @@ pub fn write_container(
     out.extend_from_slice(&blob_region);
 
     std::fs::write(path, &out)?;
-    Ok(())
+
+    Ok(ContainerSession {
+        path: path.to_path_buf(),
+        key,
+        header_prefix,
+        blob_region_start,
+        blobs: blob_locs,
+        by_id,
+    })
 }
 
-/// Read an `LBOOK2` container from `path` and return a fully-populated
-/// [`JournalData`] (attachment bytes re-inflated to base64, matching the legacy
-/// path). Fails on any authentication or structural mismatch.
-pub fn read_container(
-    path: &std::path::Path,
+/// Open a container: derive the key once, decrypt only the (small) index, and
+/// return the journal **with attachment bytes stripped** (every `data` empty)
+/// plus a [`ContainerSession`] for decrypting blobs on demand. The blob region
+/// is never read here.
+pub fn open_session(
+    path: &Path,
     password: &str,
     keyfile: Option<&str>,
-) -> Result<JournalData> {
-    let bytes = std::fs::read(path)?;
-    if bytes.len() < HEADER_LEN || !is_container(&bytes) {
-        return Err(JournalError::InvalidFormat(
-            "not a Lockbook container".to_string(),
-        ));
-    }
+) -> Result<(JournalData, ContainerSession)> {
+    let mut f = File::open(path)?;
 
-    let version = bytes[6];
+    let mut header = [0u8; HEADER_LEN];
+    f.read_exact(&mut header)
+        .map_err(|_| JournalError::InvalidFormat("file smaller than container header".to_string()))?;
+    if !is_container(&header) {
+        return Err(JournalError::InvalidFormat("not a Lockbook container".to_string()));
+    }
+    let version = header[6];
     if version != FORMAT_VERSION {
         return Err(JournalError::InvalidFormat(format!(
             "unsupported container version {version}"
         )));
     }
 
-    let salt: [u8; SALT_SIZE] = bytes[7..7 + SALT_SIZE].try_into().unwrap();
+    let salt: [u8; SALT_SIZE] = header[7..7 + SALT_SIZE].try_into().unwrap();
     let mut p = 7 + SALT_SIZE;
-    let time_cost = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+    let time_cost = u32::from_le_bytes(header[p..p + 4].try_into().unwrap());
     p += 4;
-    let memory_kib = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+    let memory_kib = u32::from_le_bytes(header[p..p + 4].try_into().unwrap());
     p += 4;
-    let parallelism = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+    let parallelism = u32::from_le_bytes(header[p..p + 4].try_into().unwrap());
     p += 4;
-    let index_nonce: [u8; NONCE_SIZE] = bytes[p..p + NONCE_SIZE].try_into().unwrap();
+    let index_nonce: [u8; NONCE_SIZE] = header[p..p + NONCE_SIZE].try_into().unwrap();
     p += NONCE_SIZE;
     debug_assert_eq!(p, HEADER_PREFIX_LEN);
-    let index_len = u64::from_le_bytes(bytes[p..p + 8].try_into().unwrap()) as usize;
+    let index_len = u64::from_le_bytes(header[p..p + 8].try_into().unwrap()) as usize;
 
-    let header_prefix = &bytes[..HEADER_PREFIX_LEN];
+    let header_prefix = header[..HEADER_PREFIX_LEN].to_vec();
 
-    let index_start = HEADER_LEN;
-    let index_end = index_start
-        .checked_add(index_len)
-        .ok_or_else(|| JournalError::InvalidFormat("index length overflow".to_string()))?;
-    if index_end > bytes.len() {
-        return Err(JournalError::InvalidFormat(
-            "index extends past end of file".to_string(),
-        ));
-    }
-    let index_ct = &bytes[index_start..index_end];
-    let blob_region = &bytes[index_end..];
+    let mut index_ct = vec![0u8; index_len];
+    f.read_exact(&mut index_ct)
+        .map_err(|_| JournalError::InvalidFormat("index extends past end of file".to_string()))?;
 
     let keyfile_bytes = read_keyfile(keyfile)?;
     let key = derive_key(
@@ -296,9 +363,8 @@ pub fn read_container(
         parallelism,
         keyfile_bytes.as_deref(),
     );
-    let key_ref: &[u8; KEY_LEN] = &key;
 
-    let index_compressed = decrypt_chunk(key_ref, &index_nonce, index_ct, &index_aad(header_prefix))
+    let index_compressed = decrypt_chunk(&key, &index_nonce, &index_ct, &index_aad(&header_prefix))
         .map_err(|_| JournalError::DecryptionFailed("wrong password or keyfile".to_string()))?;
     let mut index_json = zstd::decode_all(&index_compressed[..])
         .map_err(|e| JournalError::InvalidFormat(format!("index decompression failed: {e}")))?;
@@ -306,42 +372,59 @@ pub fn read_container(
         serde_json::from_slice(&index_json).map_err(JournalError::Json)?;
     index_json.zeroize();
 
-    let mut journal = index.journal;
-    let blob_refs = index.blobs;
+    let blob_region_start = (HEADER_LEN + index_len) as u64;
+    let mut blobs: Vec<BlobLoc> = Vec::with_capacity(index.blobs.len());
+    let mut by_id: HashMap<String, usize> = HashMap::with_capacity(index.blobs.len());
+    for (i, b) in index.blobs.iter().enumerate() {
+        blobs.push(BlobLoc {
+            offset: b.offset,
+            enc_len: b.enc_len,
+            nonce: b.nonce,
+        });
+        by_id.insert(b.id.clone(), i);
+    }
 
-    // Re-inflate blobs in the exact flattened order they were written.
-    let mut ordinal: u64 = 0;
+    let session = ContainerSession {
+        path: path.to_path_buf(),
+        key,
+        header_prefix,
+        blob_region_start,
+        blobs,
+        by_id,
+    };
+
+    // `index.journal` already has every attachment `data` empty.
+    Ok((index.journal, session))
+}
+
+/// Read an `LBOOK2` container and return a **fully-populated** [`JournalData`]
+/// (attachment bytes re-inflated to base64). Used by the save path's round-trip
+/// verification; the runtime open path uses [`open_session`] instead.
+pub fn read_container(
+    path: &Path,
+    password: &str,
+    keyfile: Option<&str>,
+) -> Result<JournalData> {
+    let (mut journal, session) = open_session(path, password, keyfile)?;
+
+    // Re-inflate every blob, verifying the table lines up with the attachments.
+    let mut ordinal: usize = 0;
     for entry in &mut journal.entries {
         for att in &mut entry.attachments {
-            let bref = blob_refs.get(ordinal as usize).ok_or_else(|| {
-                JournalError::InvalidFormat("blob table shorter than attachments".to_string())
-            })?;
-            if bref.id != att.id {
+            if !session.has_blob(&att.id) {
                 return Err(JournalError::InvalidFormat(
-                    "blob table does not match attachments".to_string(),
+                    "attachment has no blob in the container".to_string(),
                 ));
             }
-            let start = bref.offset as usize;
-            let end = start
-                .checked_add(bref.enc_len as usize)
-                .ok_or_else(|| JournalError::InvalidFormat("blob length overflow".to_string()))?;
-            if end > blob_region.len() {
-                return Err(JournalError::InvalidFormat(
-                    "blob extends past end of file".to_string(),
-                ));
-            }
-            let aad = blob_aad(header_prefix, ordinal);
-            let mut raw = decrypt_chunk(key_ref, &bref.nonce, &blob_region[start..end], &aad)
-                .map_err(|_| JournalError::DecryptionFailed("blob authentication failed".to_string()))?;
+            let mut raw = session.decrypt_blob(&att.id)?;
             att.data = BASE64.encode(&raw);
             raw.zeroize();
             ordinal += 1;
         }
     }
-
-    if (ordinal as usize) != blob_refs.len() {
+    if ordinal != session.blobs.len() {
         return Err(JournalError::InvalidFormat(
-            "blob table longer than attachments".to_string(),
+            "blob table does not match attachment count".to_string(),
         ));
     }
 

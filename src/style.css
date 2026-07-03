@@ -434,6 +434,15 @@ html.resizing-attachments * {
   border-radius:var(--radius-sm); color:var(--text-muted); font-size:12px;
 }
 
+/* Inline image whose encrypted bytes haven't been loaded yet (or failed to
+   load). The <img> is kept so the attachment survives a save; this renders a
+   neutral placeholder box instead of a broken-image icon. */
+img[data-att-id].att-img-unloaded {
+  min-width:80px; min-height:48px;
+  background:var(--bg-raised);
+  border:1px dashed var(--border); border-radius:var(--radius-sm);
+}
+
 /* Floating resize handle for the currently selected inline image */
 #img-resize-handle {
   display:none; position:absolute; width:16px; height:16px; z-index:20;

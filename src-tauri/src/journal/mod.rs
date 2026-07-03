@@ -117,10 +117,3 @@ impl JournalData {
         entries
     }
 }
-
-/// Holds the runtime state of an open journal (path + credentials + data).
-pub struct OpenJournal {
-    #[allow(dead_code)]
-    pub path: String,
-    pub data: JournalData,
-}

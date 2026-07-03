@@ -4,12 +4,23 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use tauri::State;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-use crate::encryption;
+use crate::encryption::{self, container::ContainerSession};
 use crate::error::{JournalError, Result};
 use crate::journal::{
     entry::{Attachment, AttachmentPlacement, JournalEntry},
-    JournalData, OpenJournal,
+    JournalData,
 };
+
+/// The currently open journal held in memory: its path, a working copy of the
+/// journal data (attachment bytes stripped for v2 containers), and — for v2
+/// containers — a keyed session that decrypts attachment blobs on demand without
+/// re-deriving the Argon2 master key. Dropping it (e.g. on `close_journal`)
+/// zeroizes the session's master key.
+pub struct OpenJournal {
+    pub path: String,
+    pub data: JournalData,
+    pub session: Option<ContainerSession>,
+}
 
 /// Global in-memory state: the currently open journal.
 pub struct JournalState(pub Mutex<Option<OpenJournal>>);
@@ -82,7 +93,7 @@ pub async fn create_journal(
     state: State<'_, JournalState>,
 ) -> Result<JournalData> {
     let data_path = path.clone();
-    let data = tauri::async_runtime::spawn_blocking(move || {
+    let (data, session) = tauri::async_runtime::spawn_blocking(move || {
         encryption::create_journal(&data_path, &password, keyfile.as_deref())
     })
     .await
@@ -92,6 +103,7 @@ pub async fn create_journal(
     *guard = Some(OpenJournal {
         path: path.clone(),
         data: data.clone(),
+        session: Some(session),
     });
 
     Ok(data)
@@ -106,8 +118,8 @@ pub async fn open_journal(
     state: State<'_, JournalState>,
 ) -> Result<JournalData> {
     let data_path = path.clone();
-    let data = tauri::async_runtime::spawn_blocking(move || {
-        encryption::load_journal(&data_path, &password, keyfile.as_deref())
+    let (data, session) = tauri::async_runtime::spawn_blocking(move || {
+        encryption::open_journal_session(&data_path, &password, keyfile.as_deref())
     })
     .await
     .unwrap_or_else(|err| Err(JournalError::DecryptionFailed(err.to_string())))?;
@@ -116,6 +128,7 @@ pub async fn open_journal(
     *guard = Some(OpenJournal {
         path: path.clone(),
         data: data.clone(),
+        session,
     });
 
     Ok(data)
@@ -128,26 +141,111 @@ pub async fn save_journal(
     path: String,
     password: String,
     keyfile: Option<String>,
-    data: JournalData,
+    mut data: JournalData,
     state: State<'_, JournalState>,
 ) -> Result<()> {
-    // Persist to disk via timenc
+    // The frontend sends attachments it never opened with an empty `data` (their
+    // bytes were never decrypted into the UI). Refill those from the currently
+    // open container's blobs before writing, so untouched attachments survive.
+    // Newly-added attachments already carry their bytes.
+    {
+        let guard = state.0.lock().unwrap();
+        resolve_stripped_attachments(&mut data, guard.as_ref())?;
+    }
+
     let data_path = path.clone();
     let data_for_disk = data.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let session = tauri::async_runtime::spawn_blocking(move || {
         encryption::save_journal(&data_path, &password, keyfile.as_deref(), &data_for_disk)
     })
     .await
     .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))?;
 
-    // Also update the in-memory state
+    // Keep only the stripped journal in memory; blobs are served from the fresh
+    // session on demand.
+    strip_attachment_data(&mut data);
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
         path: path.clone(),
-        data: data.clone(),
+        data,
+        session: Some(session),
     });
 
     Ok(())
+}
+
+/// Refill attachments whose `data` is empty from the open container's session
+/// (or, for a legacy in-memory journal, from the stored bytes). Genuinely-empty
+/// (0-byte) or brand-new attachments not present in the container are left as-is.
+fn resolve_stripped_attachments(data: &mut JournalData, open: Option<&OpenJournal>) -> Result<()> {
+    let Some(open) = open else {
+        return Ok(());
+    };
+    for entry in &mut data.entries {
+        for att in &mut entry.attachments {
+            if !att.data.is_empty() {
+                continue;
+            }
+            if let Some(session) = open.session.as_ref() {
+                if session.has_blob(&att.id) {
+                    let bytes = session.decrypt_blob(&att.id)?;
+                    att.data = BASE64.encode(&bytes);
+                }
+            } else if let Some(existing) = find_attachment_bytes(&open.data, &att.id) {
+                att.data = existing;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Find the base64 bytes of an attachment already held in memory (legacy path).
+fn find_attachment_bytes(data: &JournalData, id: &str) -> Option<String> {
+    for entry in &data.entries {
+        for att in &entry.attachments {
+            if att.id == id && !att.data.is_empty() {
+                return Some(att.data.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Empty every attachment's `data` so the in-memory journal copy stays small;
+/// the actual bytes are served from the container session on demand.
+fn strip_attachment_data(data: &mut JournalData) {
+    for entry in &mut data.entries {
+        for att in &mut entry.attachments {
+            att.data.clear();
+        }
+    }
+}
+
+/// Decrypt and return one attachment's bytes (base64) from the open journal.
+///
+/// For v2 containers this decrypts a single blob on demand via the keyed session
+/// (no Argon2). For a legacy journal still held fully in memory it returns the
+/// bytes already present. Attachments the UI added but hasn't saved yet aren't in
+/// the container; the frontend serves those from its own copy and never asks here.
+#[tauri::command]
+pub fn get_attachment_data(id: String, state: State<'_, JournalState>) -> Result<String> {
+    let guard = state.0.lock().unwrap();
+    let journal = guard.as_ref().ok_or(JournalError::NoJournalOpen)?;
+
+    if let Some(session) = journal.session.as_ref() {
+        if session.has_blob(&id) {
+            let bytes = session.decrypt_blob(&id)?;
+            return Ok(BASE64.encode(&bytes));
+        }
+    }
+    for entry in &journal.data.entries {
+        for att in &entry.attachments {
+            if att.id == id {
+                return Ok(att.data.clone());
+            }
+        }
+    }
+    Err(JournalError::InvalidFormat(format!("attachment not found: {id}")))
 }
 
 /// Verify the current password, then re-encrypt the journal with a new password.
@@ -157,7 +255,7 @@ pub async fn change_journal_password(
     current_password: String,
     new_password: String,
     keyfile: Option<String>,
-    data: JournalData,
+    mut data: JournalData,
     state: State<'_, JournalState>,
 ) -> Result<()> {
     let verify_path = path.clone();
@@ -168,9 +266,16 @@ pub async fn change_journal_password(
     .await
     .unwrap_or_else(|err| Err(JournalError::DecryptionFailed(err.to_string())))?;
 
+    // Refill untouched (stripped) attachments from the current session before
+    // re-encrypting the whole journal under the new password.
+    {
+        let guard = state.0.lock().unwrap();
+        resolve_stripped_attachments(&mut data, guard.as_ref())?;
+    }
+
     let data_path = path.clone();
     let data_for_disk = data.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let session = tauri::async_runtime::spawn_blocking(move || {
         encryption::save_journal(
             &data_path,
             &new_password,
@@ -181,10 +286,12 @@ pub async fn change_journal_password(
     .await
     .unwrap_or_else(|err| Err(JournalError::EncryptionFailed(err.to_string())))?;
 
+    strip_attachment_data(&mut data);
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
         path: path.clone(),
-        data: data.clone(),
+        data,
+        session: Some(session),
     });
 
     Ok(())

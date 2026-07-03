@@ -48,6 +48,11 @@ const AUTO_LOCK_DEFAULT_MINUTES = 5;
 let autoLockMinutes = AUTO_LOCK_DEFAULT_MINUTES;
 let autoLockTimer = null;
 
+// Lazy attachment bytes: v2 journals open without decrypting any attachment
+// blobs. Bytes are fetched from the encrypted container on demand and cached
+// here for the session (keyed by attachment id). Cleared on open/close/lock.
+const attachmentCache = new Map();
+
 // Matches `![alt](attachment:<id> "width=<px>")` — the "width" part is optional.
 const ATTACHMENT_IMG_SOURCE = String.raw`!\[([^\]]*)\]\(attachment:([\w-]+)(?:\s+"width=(\d+)")?\)`;
 
@@ -681,6 +686,7 @@ async function doUnlockJournal() {
       keyfile: currentKeyfile || null,
     });
 
+    attachmentCache.clear(); // fresh journal → drop any cached blob bytes
     currentJournal = result;
     currentPassword = password;
 
@@ -1493,9 +1499,14 @@ async function openAttachment(id) {
   if (!attachment) return;
 
   try {
+    const dataBase64 = await getAttachmentBytes(attachment);
+    if (!dataBase64) {
+      showStatus("⚠ Anhang konnte nicht geladen werden", 5000);
+      return;
+    }
     const path = await window.__TAURI__.invoke("write_temp_attachment", {
       name: attachment.name,
-      dataBase64: attachment.data,
+      dataBase64,
     });
     await window.__TAURI__.shell.open(path);
   } catch (err) {
@@ -1722,24 +1733,70 @@ function setEditorContent(html, attachments) {
   updateEditorEmptyState();
 }
 
-function hydrateEditorImages(attachments) {
+// Returns an attachment's base64 bytes. Attachments the user just added still
+// carry their bytes in memory, so those are used directly. Otherwise the bytes
+// are decrypted on demand from the encrypted container (a single blob, no Argon2)
+// and cached for the session. Returns "" if the bytes can't be obtained.
+async function getAttachmentBytes(att) {
+  if (att && typeof att.data === "string" && att.data) return att.data;
+  const id = typeof att === "string" ? att : att && att.id;
+  if (!id) return "";
+  if (attachmentCache.has(id)) return attachmentCache.get(id);
+  try {
+    const b64 = await window.__TAURI__.invoke("get_attachment_data", { id });
+    const val = typeof b64 === "string" ? b64 : "";
+    attachmentCache.set(id, val);
+    return val;
+  } catch (err) {
+    console.warn("get_attachment_data failed for", id, err);
+    return "";
+  }
+}
+
+function replaceImageWithMissing(img) {
+  const missing = document.createElement("span");
+  missing.className = "att-img-missing";
+  missing.setAttribute("contenteditable", "false");
+  missing.textContent = "🖼 image (missing)";
+  img.replaceWith(missing);
+}
+
+// Hydrate the editor's inline images. Attributes and genuine-orphan handling run
+// synchronously; the actual image bytes are then loaded lazily (per image). A
+// transient load failure keeps the <img data-att-id> element in place — never
+// replaced — so the attachment isn't pruned as orphaned and its data survives.
+async function hydrateEditorImages(attachments) {
   const editor = $id("content-editor");
   if (!editor) return;
   const byId = new Map((attachments || []).map((a) => [a.id, a]));
+
+  const jobs = [];
   editor.querySelectorAll("img[data-att-id]").forEach((img) => {
-    const att = byId.get(img.getAttribute("data-att-id"));
     img.setAttribute("contenteditable", "false");
     img.setAttribute("draggable", "false");
+    const att = byId.get(img.getAttribute("data-att-id"));
     if (att && isImageMime(att.mime_type)) {
-      img.src = `data:${att.mime_type};base64,${att.data}`;
+      jobs.push([img, att]);
     } else {
-      const missing = document.createElement("span");
-      missing.className = "att-img-missing";
-      missing.setAttribute("contenteditable", "false");
-      missing.textContent = "🖼 image (missing)";
-      img.replaceWith(missing);
+      // No matching image attachment at all — a real orphan (e.g. legacy data).
+      replaceImageWithMissing(img);
     }
   });
+
+  for (const [img, att] of jobs) {
+    const data = await getAttachmentBytes(att);
+    // The user may have switched entries while we were decrypting; the editor
+    // content is replaced wholesale, so a detached <img> is stale — skip it.
+    if (!img.isConnected) continue;
+    if (data) {
+      img.src = `data:${att.mime_type};base64,${data}`;
+      img.classList.remove("att-img-unloaded");
+    } else {
+      // Couldn't load the bytes right now. Keep the element (so the attachment
+      // is preserved on save) but mark it so it renders as a placeholder.
+      img.classList.add("att-img-unloaded");
+    }
+  }
 }
 
 // Serialize the editor for saving: sanitize (which also strips the base64 src
@@ -2135,6 +2192,7 @@ async function lockJournal() {
   currentPassword = null;
   activeEntryId = null;
   isDirty = false;
+  attachmentCache.clear(); // locked → drop decrypted blob bytes from memory
 
   currentFilePath = path;
   currentKeyfile = keyfile;
@@ -2335,6 +2393,7 @@ async function closeJournal() {
   currentKeyfile = null;
   activeEntryId = null;
   isDirty = false;
+  attachmentCache.clear(); // closed → drop decrypted blob bytes from memory
   updateTitleSurfaces();
   showEmptyState();
   showScreen("welcome-screen");
@@ -2364,9 +2423,10 @@ async function ensureAttachmentExported(attachment, dirPath, dirLabel, written) 
   const fileName = `${attachment.id.slice(0, 8)}_${safeName}`;
   const relPath = `${dirLabel}/${fileName}`;
 
+  const dataBase64 = await getAttachmentBytes(attachment);
   await window.__TAURI__.invoke("write_binary_file", {
     path: `${dirPath}/${fileName}`,
-    dataBase64: attachment.data,
+    dataBase64,
   });
 
   written.set(attachment.id, relPath);

@@ -107,7 +107,7 @@ pub fn save_journal(
     password: &str,
     keyfile: Option<&str>,
     data: &JournalData,
-) -> Result<()> {
+) -> Result<container::ContainerSession> {
     let _pw = SecurePassword::new(password.to_string());
 
     let target = PathBuf::from(journal_path);
@@ -116,11 +116,14 @@ pub fn save_journal(
     // back to a copy).
     let staging = staging_path_for(&target);
 
-    if let Err(e) = container::write_container(&staging, password, keyfile, data) {
-        // The original journal was never touched; just clean up any partial staging.
-        let _ = std::fs::remove_file(&staging);
-        return Err(e);
-    }
+    let mut session = match container::write_container(&staging, password, keyfile, data) {
+        Ok(session) => session,
+        Err(e) => {
+            // The original journal was never touched; just clean up any partial staging.
+            let _ = std::fs::remove_file(&staging);
+            return Err(e);
+        }
+    };
 
     // Round-trip verification: re-read the staging container and confirm it
     // decrypts back to exactly the data we were asked to save. Both sides are
@@ -161,7 +164,10 @@ pub fn save_journal(
         return Err(JournalError::Io(e));
     }
 
-    Ok(())
+    // The bytes are unchanged by the rename; repoint the session at the final
+    // path so later on-demand blob reads hit the journal, not the gone staging file.
+    session.set_path(target);
+    Ok(session)
 }
 
 /// Build the staging path used while encrypting: a hidden sibling of `target`
@@ -197,15 +203,51 @@ fn hidden_backup_path_for(target: &Path) -> PathBuf {
     }
 }
 
-/// Create a brand-new journal file (must not already exist).
+/// Create a brand-new journal file (must not already exist), returning the empty
+/// journal and a session for the newly-written container.
 pub fn create_journal(
     journal_path: &str,
     password: &str,
     keyfile: Option<&str>,
-) -> Result<JournalData> {
+) -> Result<(JournalData, container::ContainerSession)> {
     let data = JournalData::default();
-    save_journal(journal_path, password, keyfile, &data)?;
-    Ok(data)
+    let session = save_journal(journal_path, password, keyfile, &data)?;
+    Ok((data, session))
+}
+
+/// Open a journal for lazy access, detecting the format.
+///
+/// * **v2 `LBOOK2` container** → returns the journal with attachment bytes
+///   stripped (every `data` empty) plus a [`container::ContainerSession`] to
+///   decrypt blobs on demand.
+/// * **legacy TimENC file** → returns the fully-populated journal and `None`;
+///   there is no container to lazily read from, so its bytes stay in memory until
+///   the first save migrates it to v2.
+pub fn open_journal_session(
+    journal_path: &str,
+    password: &str,
+    keyfile: Option<&str>,
+) -> Result<(JournalData, Option<container::ContainerSession>)> {
+    let _pw = SecurePassword::new(password.to_string());
+
+    let path = Path::new(journal_path);
+    if !path.exists() {
+        return Err(JournalError::FileNotFound(journal_path.to_string()));
+    }
+
+    let mut magic = [0u8; 6];
+    if let Ok(mut f) = std::fs::File::open(path) {
+        use std::io::Read as _;
+        let _ = f.read(&mut magic);
+    }
+
+    if container::is_container(&magic) {
+        let (data, session) = container::open_session(path, password, keyfile)?;
+        Ok((data, Some(session)))
+    } else {
+        let data = load_timenc_journal(journal_path, password, keyfile)?;
+        Ok((data, None))
+    }
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

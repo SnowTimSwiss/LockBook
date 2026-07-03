@@ -46,6 +46,7 @@ fn main() {
             commands::read_clipboard_image,
             commands::write_temp_attachment,
             commands::write_binary_file,
+            commands::get_attachment_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TimENC Journal");
