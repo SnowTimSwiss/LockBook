@@ -113,10 +113,12 @@ pub fn save_journal(
         return Err(e);
     }
 
-    // Keep a backup of the previous version. Best-effort: the atomic rename below
-    // already guarantees safety, so a failed backup must not block the save.
+    // Keep a hidden rolling backup of the previous version next to the journal.
+    // Best-effort: the atomic rename below already guarantees crash-safety, so a
+    // failed backup must not block the save. The name is dot-prefixed so file
+    // managers hide it — the user only ever sees the journal file itself.
     if target.exists() {
-        let backup = with_extra_extension(&target, "bak");
+        let backup = hidden_backup_path_for(&target);
         let _ = std::fs::rename(&target, &backup)
             .or_else(|_| std::fs::copy(&target, &backup).map(|_| ()));
     }
@@ -148,17 +150,18 @@ fn staging_path_for(target: &Path) -> PathBuf {
     }
 }
 
-/// Append an extra extension to `path` (e.g. `diary.lbook` -> `diary.lbook.bak`).
-fn with_extra_extension(path: &Path, extra: &str) -> PathBuf {
-    let mut name = path
+/// Hidden sibling backup path for `target`
+/// (e.g. `diary.lbook` -> `.diary.lbook.bak`). Dot-prefixed so it stays out of
+/// the user's way: only the journal file itself is visible in the folder.
+fn hidden_backup_path_for(target: &Path) -> PathBuf {
+    let file_name = target
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    name.push('.');
-    name.push_str(extra);
-    match path.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir.join(name),
-        _ => PathBuf::from(name),
+        .unwrap_or_else(|| "journal".to_string());
+    let backup_name = format!(".{file_name}.bak");
+    match target.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(backup_name),
+        _ => PathBuf::from(backup_name),
     }
 }
 
