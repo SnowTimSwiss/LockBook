@@ -526,14 +526,14 @@ async function doCreateJournal() {
     currentPassword = password;
 
     currentJournal = {
-      version: "1.0",
+      version: "2.0",
       entries: [],
       metadata: {
         name,
         created: new Date().toISOString(),
         modified: new Date().toISOString(),
         app: "Lockbook",
-        version: "1.2.1",
+        version: "2.0",
       },
     };
 
@@ -686,9 +686,12 @@ function bindJournalUI() {
   // Emoji picker
   $id("btn-emoji-picker")?.addEventListener("click", toggleEmojiPicker);
 
+  // Rich-text editor
+  bindFormatToolbar();
+  bindImageResize();
+
   // Attachments
   bindAttachmentButtons();
-  bindAttachmentResize();
   bindDragAndDropAttach();
   bindImagePaste();
 
@@ -719,6 +722,7 @@ function bindJournalUI() {
   $id("content-editor")?.addEventListener("input", () => {
     markDirty();
     updateWordCount();
+    updateEditorEmptyState();
   });
 
   // Search
@@ -731,29 +735,10 @@ function bindJournalUI() {
     const results = currentJournal.entries.filter(
       (en) =>
         (en.title || "").toLowerCase().includes(query) ||
-        (en.content || "").toLowerCase().includes(query) ||
+        htmlToPlainText(en.content || "").toLowerCase().includes(query) ||
         (en.tags || []).some((t) => t.includes(query))
     );
     renderSearchResults(results, query);
-  });
-
-  // Editor tabs (Write / Preview)
-  $$("#editor-tabs .etab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      $$("#editor-tabs .etab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      const mode = tab.dataset.tab;
-      const editor = $id("content-editor");
-      const preview = $id("content-preview");
-      if (mode === "write") {
-        editor.style.display = "";
-        preview.classList.remove("active");
-      } else {
-        editor.style.display = "none";
-        renderMarkdownPreview();
-        preview.classList.add("active");
-      }
-    });
   });
 
   // Shortcuts help
@@ -878,6 +863,8 @@ async function saveSettings() {
 }
 
 function enterJournalUI() {
+  // Migrate v1.3.0 (Markdown) journals to the v2 HTML model in memory.
+  migrateJournalToV2();
   // Normalize journal data to ensure all entries have required fields
   normalizeJournalData();
 
@@ -941,7 +928,7 @@ function selectEntry(id) {
   $id("entry-editor").style.display = "flex";
 
   $id("entry-title-input").value = entry.title || "";
-  $id("content-editor").value = entry.content || "";
+  setEditorContent(entry.content || "", entry.attachments);
   $id("mood-select").value = entry.mood || "neutral";
 
   renderTags();
@@ -949,12 +936,6 @@ function selectEntry(id) {
   updateWordCount();
   updateMetadata();
   updateTitleSurfaces();
-
-  // Reset to write tab
-  $$("#editor-tabs .etab").forEach((t) => t.classList.remove("active"));
-  $$('#editor-tabs .etab[data-tab="write"]')?.classList.add("active");
-  $id("content-editor").style.display = "";
-  $id("content-preview").classList.remove("active");
 }
 
 function showEmptyState() {
@@ -1085,17 +1066,20 @@ function isValidAttachment(a) {
   );
 }
 
-// Images are represented only by their inline `attachment:` reference in the
-// content text — if that reference is deleted from the text, the backing
+// Inline images are represented by an `<img data-att-id="…">` element in the
+// entry's HTML content — if that element is deleted from the text, the backing
 // attachment is orphaned and dropped so it doesn't bloat the journal forever.
-// Non-image attachments live in the attachments panel and are removed there.
+// Panel attachments (non-images, or images the user placed as a file) are kept
+// regardless; they live in the attachments panel and are removed there.
 function pruneOrphanedImageAttachments(content, attachments) {
   if (!attachments.length) return attachments;
   const referenced = new Set();
-  const re = new RegExp(ATTACHMENT_IMG_SOURCE, "g");
+  const re = /data-att-id="([\w-]+)"/g;
   let m;
-  while ((m = re.exec(content || ""))) referenced.add(m[2]);
-  return attachments.filter((a) => !isImageMime(a.mime_type) || referenced.has(a.id));
+  while ((m = re.exec(content || ""))) referenced.add(m[1]);
+  return attachments.filter(
+    (a) => !isImageMime(a.mime_type) || a.placement === "panel" || referenced.has(a.id)
+  );
 }
 
 function formatFileSize(bytes) {
@@ -1115,20 +1099,36 @@ function attachmentIcon(mime) {
   return "📄";
 }
 
-function escapeMdText(text) {
-  const cleaned = String(text || "").replace(/[[\]\n]/g, " ").trim();
-  return cleaned || "attachment";
+// Insert a DOM node at the current caret inside the contenteditable editor.
+// Falls back to appending at the end when the caret isn't inside the editor.
+function insertNodeAtCursor(node) {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  editor.focus();
+  const sel = window.getSelection();
+  let range;
+  if (sel && sel.rangeCount && editor.contains(sel.anchorNode)) {
+    range = sel.getRangeAt(0);
+    range.deleteContents();
+  } else {
+    range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  }
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
-function insertAtCursor(text) {
-  const textarea = $id("content-editor");
-  if (!textarea) return;
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  const value = textarea.value;
-  textarea.value = value.slice(0, start) + text + value.slice(end);
-  textarea.selectionStart = textarea.selectionEnd = start + text.length;
-  textarea.focus();
+// Insert plain text at the caret (emoji, etc.). execCommand keeps undo history
+// and caret placement correct inside contenteditable.
+function insertTextAtCursor(text) {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  editor.focus();
+  document.execCommand("insertText", false, text);
 }
 
 function loadImageDimensions(attachment) {
@@ -1329,7 +1329,7 @@ async function finalizeAttachment(attachment, { forceAttachmentPanel = false } =
     const displayWidth = Math.min(width || 480, 480);
 
     entry.attachments.push(attachment);
-    insertAtCursor(`![${escapeMdText(attachment.name)}](attachment:${attachment.id} "width=${displayWidth}")`);
+    insertInlineImage(attachment, displayWidth);
   } else {
     attachment.placement = "panel";
     entry.attachments.push(attachment);
@@ -1338,7 +1338,19 @@ async function finalizeAttachment(attachment, { forceAttachmentPanel = false } =
 
   markDirty();
   renderAttachments();
-  if ($id("content-preview")?.classList.contains("active")) renderMarkdownPreview();
+}
+
+// Builds a hydrated inline <img> (with its base64 src for display) and drops it
+// at the caret. On save the src is stripped again; only `data-att-id` persists.
+function insertInlineImage(attachment, displayWidth) {
+  const img = document.createElement("img");
+  img.setAttribute("data-att-id", attachment.id);
+  img.setAttribute("contenteditable", "false");
+  img.setAttribute("draggable", "false");
+  if (Number.isFinite(displayWidth)) img.style.width = `${Math.round(displayWidth)}px`;
+  img.src = `data:${attachment.mime_type};base64,${attachment.data}`;
+  insertNodeAtCursor(img);
+  updateEditorEmptyState();
 }
 
 function renderAttachments() {
@@ -1414,65 +1426,254 @@ function removeAttachment(id) {
   renderAttachments();
 }
 
-// ── Drag-resize for inline images in the preview ──
-function bindAttachmentResize() {
-  const preview = $id("content-preview");
-  if (!preview || preview.dataset.resizeBound === "true") return;
-  preview.dataset.resizeBound = "true";
+// ── Inline image selection + drag-resize inside the editor ──
+// Clicking an inline image selects it and shows a floating handle overlaid on
+// its bottom-right corner (kept out of the editable DOM so it can't be typed
+// into or serialized). Dragging the handle rewrites the image's width; on save
+// only `style="width:…px"` persists on the <img data-att-id>.
+let selectedImg = null;
 
-  let dragging = null;
+function bindImageResize() {
+  const editor = $id("content-editor");
+  const handle = $id("img-resize-handle");
+  if (!editor || !handle || editor.dataset.resizeBound === "true") return;
+  editor.dataset.resizeBound = "true";
 
-  preview.addEventListener("pointerdown", (e) => {
-    const handle = e.target.closest(".att-resize-handle");
-    if (!handle) return;
-    const wrap = handle.closest(".att-img-wrap");
-    const img = wrap?.querySelector("img");
-    if (!wrap || !img) return;
+  editor.addEventListener("click", (e) => {
+    const img = e.target.closest("img[data-att-id]");
+    if (img) selectImage(img);
+    else deselectImage();
+  });
+  editor.addEventListener("scroll", positionResizeHandle);
 
+  let drag = null;
+  handle.addEventListener("pointerdown", (e) => {
+    if (!selectedImg) return;
     e.preventDefault();
-    dragging = { wrap, img, startX: e.clientX, startWidth: img.getBoundingClientRect().width };
+    drag = { startX: e.clientX, startWidth: selectedImg.getBoundingClientRect().width };
     handle.setPointerCapture(e.pointerId);
   });
-
-  preview.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const maxWidth = Math.max(60, preview.clientWidth - 24);
-    const newWidth = Math.max(60, Math.min(maxWidth, Math.round(dragging.startWidth + (e.clientX - dragging.startX))));
-    dragging.img.style.width = `${newWidth}px`;
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag || !selectedImg) return;
+    const maxW = Math.max(60, editor.clientWidth - 48);
+    const w = Math.max(60, Math.min(maxW, Math.round(drag.startWidth + (e.clientX - drag.startX))));
+    selectedImg.style.width = `${w}px`;
+    positionResizeHandle();
   });
-
-  const endDrag = () => {
-    if (!dragging) return;
-    const { wrap, img } = dragging;
-    dragging = null;
-
-    const newWidth = Math.round(parseFloat(img.style.width));
-    const start = Number(wrap.dataset.start);
-    const end = Number(wrap.dataset.end);
-    const alt = wrap.dataset.alt || "";
-    const attId = wrap.dataset.attId;
-    if (!attId || !Number.isFinite(start) || !Number.isFinite(end)) return;
-
-    const textarea = $id("content-editor");
-    if (!textarea) return;
-
-    const value = textarea.value;
-    const replacement = `![${alt}](attachment:${attId} "width=${newWidth}")`;
-    textarea.value = value.slice(0, start) + replacement + value.slice(end);
-
+  const end = () => {
+    if (!drag) return;
+    drag = null;
     markDirty();
-    renderMarkdownPreview();
+    positionResizeHandle();
   };
-
-  preview.addEventListener("pointerup", endDrag);
-  preview.addEventListener("pointercancel", endDrag);
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  window.addEventListener("resize", positionResizeHandle);
 }
 
-// ── Markdown Preview ──
+function selectImage(img) {
+  deselectImage();
+  selectedImg = img;
+  img.classList.add("selected");
+  positionResizeHandle();
+}
 
-// Applies the same lightweight markdown transforms the preview always used,
-// on a plain text segment (i.e. text with any attachment tags already cut out).
-function renderMdSegment(text) {
+function deselectImage() {
+  if (selectedImg) selectedImg.classList.remove("selected");
+  selectedImg = null;
+  $id("img-resize-handle")?.classList.remove("visible");
+}
+
+function positionResizeHandle() {
+  const handle = $id("img-resize-handle");
+  const wrap = $id("content-wrap");
+  if (!handle || !wrap || !selectedImg) return;
+  const imgR = selectedImg.getBoundingClientRect();
+  const wrapR = wrap.getBoundingClientRect();
+  if (imgR.bottom < wrapR.top || imgR.top > wrapR.bottom) {
+    handle.classList.remove("visible");
+    return;
+  }
+  handle.style.left = `${imgR.right - wrapR.left - 8}px`;
+  handle.style.top = `${imgR.bottom - wrapR.top - 8}px`;
+  handle.classList.add("visible");
+}
+
+// ── Rich-text content (HTML) ──
+
+// Whitelisted tags for stored/edited HTML. Anything else is unwrapped (its
+// text kept) or, for images without a valid attachment id, dropped entirely.
+const SANITIZE_TAGS = new Set([
+  "p", "div", "br", "span", "b", "strong", "i", "em", "u", "code",
+  "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "a", "img",
+]);
+
+// Only http(s)/mailto and scheme-less (relative / anchor) URLs are allowed —
+// this rejects `javascript:` and other script-bearing schemes.
+function isSafeUrl(url) {
+  const u = String(url || "").trim();
+  if (/^(https?:|mailto:)/i.test(u)) return true;
+  return !/:/.test(u);
+}
+
+function sanitizeHtml(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = String(html || "");
+  sanitizeNode(tpl.content);
+  return tpl.innerHTML;
+}
+
+function sanitizeNode(parent) {
+  for (const node of Array.from(parent.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) continue;
+    if (node.nodeType !== Node.ELEMENT_NODE) { node.remove(); continue; }
+
+    const tag = node.tagName.toLowerCase();
+    if (!SANITIZE_TAGS.has(tag)) {
+      // Unwrap unknown element: sanitize + keep its children, drop the wrapper.
+      sanitizeNode(node);
+      const frag = document.createDocumentFragment();
+      while (node.firstChild) frag.appendChild(node.firstChild);
+      node.replaceWith(frag);
+      continue;
+    }
+
+    sanitizeAttributes(node, tag);
+    if (tag === "img" && !node.getAttribute("data-att-id")) {
+      node.remove();
+      continue;
+    }
+    sanitizeNode(node);
+  }
+}
+
+function sanitizeAttributes(el, tag) {
+  const keepWidth = tag === "img" ? el.style.width : null;
+  for (const attr of Array.from(el.attributes)) {
+    const name = attr.name.toLowerCase();
+    if (tag === "a" && name === "href" && isSafeUrl(attr.value)) continue;
+    if (tag === "img" && name === "data-att-id" && /^[\w-]+$/.test(attr.value)) continue;
+    el.removeAttribute(attr.name);
+  }
+  if (tag === "img" && keepWidth && /^\d+(\.\d+)?px$/.test(keepWidth)) {
+    el.style.width = keepWidth;
+  }
+}
+
+// Plain-text view of stored HTML (search matching, snippets, word count).
+function htmlToPlainText(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = String(html || "");
+  return (tpl.content.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+// Convert stored HTML back to Markdown for export. `imgRelPaths` maps inline
+// image attachment ids → exported file paths.
+function htmlToMarkdown(html, imgRelPaths) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = String(html || "");
+  return serializeMdChildren(tpl.content, imgRelPaths || {})
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function serializeMdChildren(parent, imgRelPaths) {
+  let out = "";
+  for (const node of parent.childNodes) out += serializeMdNode(node, imgRelPaths);
+  return out;
+}
+
+function serializeMdNode(node, imgRelPaths) {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const tag = node.tagName.toLowerCase();
+  const inner = () => serializeMdChildren(node, imgRelPaths);
+  switch (tag) {
+    case "br": return "\n";
+    case "p": case "div": return inner() + "\n\n";
+    case "h1": return "# " + inner() + "\n\n";
+    case "h2": return "## " + inner() + "\n\n";
+    case "h3": return "### " + inner() + "\n\n";
+    case "strong": case "b": return "**" + inner() + "**";
+    case "em": case "i": return "*" + inner() + "*";
+    case "code": return "`" + inner() + "`";
+    case "blockquote": return "> " + inner().trim().replace(/\n/g, "\n> ") + "\n\n";
+    case "ul": return listToMarkdown(node, imgRelPaths, false) + "\n";
+    case "ol": return listToMarkdown(node, imgRelPaths, true) + "\n";
+    case "a": return `[${inner()}](${node.getAttribute("href") || ""})`;
+    case "img": {
+      const rel = imgRelPaths[node.getAttribute("data-att-id")];
+      return rel ? `![](${rel})` : "";
+    }
+    default: return inner();
+  }
+}
+
+function listToMarkdown(listEl, imgRelPaths, ordered) {
+  let out = "";
+  let i = 1;
+  for (const li of listEl.children) {
+    if (li.tagName.toLowerCase() !== "li") continue;
+    const marker = ordered ? `${i++}. ` : "- ";
+    out += marker + serializeMdChildren(li, imgRelPaths).trim() + "\n";
+  }
+  return out;
+}
+
+// Load stored HTML into the editor: sanitize, then hydrate each inline image's
+// base64 `src` from the entry's attachments (only `data-att-id` is persisted).
+function setEditorContent(html, attachments) {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  deselectImage();
+  editor.innerHTML = sanitizeHtml(html || "");
+  hydrateEditorImages(attachments);
+  updateEditorEmptyState();
+}
+
+function hydrateEditorImages(attachments) {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  const byId = new Map((attachments || []).map((a) => [a.id, a]));
+  editor.querySelectorAll("img[data-att-id]").forEach((img) => {
+    const att = byId.get(img.getAttribute("data-att-id"));
+    img.setAttribute("contenteditable", "false");
+    img.setAttribute("draggable", "false");
+    if (att && isImageMime(att.mime_type)) {
+      img.src = `data:${att.mime_type};base64,${att.data}`;
+    } else {
+      const missing = document.createElement("span");
+      missing.className = "att-img-missing";
+      missing.setAttribute("contenteditable", "false");
+      missing.textContent = "🖼 image (missing)";
+      img.replaceWith(missing);
+    }
+  });
+}
+
+// Serialize the editor for saving: sanitize (which also strips the base64 src
+// and contenteditable flags), and collapse a visually-empty editor to "".
+function getEditorHtml() {
+  const editor = $id("content-editor");
+  if (!editor) return "";
+  const html = sanitizeHtml(editor.innerHTML);
+  if (/<img\b/i.test(html)) return html;
+  return htmlToPlainText(html).replace(/ /g, "").trim() ? html : "";
+}
+
+function updateEditorEmptyState() {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  const empty =
+    !editor.querySelector("img") &&
+    (editor.textContent || "").replace(/ /g, "").trim() === "";
+  editor.classList.toggle("is-empty", empty);
+}
+
+// ── v1 → v2 migration (Markdown content → sanitized HTML) ──
+
+// Lightweight inline markdown → HTML for a plain text segment (no image tags).
+function mdSegmentToHtml(text) {
   let html = escapeHtml(text);
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
@@ -1484,53 +1685,131 @@ function renderMdSegment(text) {
   return html;
 }
 
-// Splits raw content on `attachment:` image tags, running the normal markdown
-// transforms on the text in between and splicing in real <img> elements
-// (backed by the entry's attachments) at each tag. `data-start`/`data-end`
-// record the exact character range of the tag in the raw text, so the
-// drag-resize handler can rewrite precisely that occurrence later.
-function renderContentWithAttachments(content, attachments) {
+// Convert a v1 entry's markdown content (with `attachment:` image tags) into the
+// v2 stored-HTML form (`<img data-att-id …>` for inline images).
+function markdownToStoredHtml(content, attachments) {
   const byId = new Map((attachments || []).map((a) => [a.id, a]));
   const re = new RegExp(ATTACHMENT_IMG_SOURCE, "g");
-
   let out = "";
   let lastIndex = 0;
   let match;
-
   while ((match = re.exec(content))) {
-    const [full, alt, id, widthStr] = match;
-    out += renderMdSegment(content.slice(lastIndex, match.index));
-
-    const attachment = byId.get(id);
-    if (attachment && isImageMime(attachment.mime_type)) {
-      const width = widthStr ? parseInt(widthStr, 10) : Math.min(attachment.width || 480, 480);
-      out +=
-        `<span class="att-img-wrap" data-att-id="${escapeHtml(id)}" data-start="${match.index}" ` +
-        `data-end="${match.index + full.length}" data-alt="${escapeHtml(alt)}">` +
-        `<img src="data:${escapeHtml(attachment.mime_type)};base64,${attachment.data}" alt="${escapeHtml(alt)}" ` +
-        `style="width:${width}px" draggable="false">` +
-        `<span class="att-resize-handle" title="Drag to resize"></span></span>`;
-    } else {
-      out += `<span class="att-img-missing">🖼 ${escapeHtml(alt || "image")} (missing)</span>`;
-    }
-
+    const [full, , id, widthStr] = match;
+    out += mdSegmentToHtml(content.slice(lastIndex, match.index));
+    const att = byId.get(id);
+    const width = widthStr ? parseInt(widthStr, 10) : Math.min(att?.width || 480, 480);
+    out += `<img data-att-id="${escapeHtml(id)}" style="width:${width}px">`;
     lastIndex = match.index + full.length;
   }
-
-  out += renderMdSegment(content.slice(lastIndex));
-  return out;
+  out += mdSegmentToHtml(content.slice(lastIndex));
+  return sanitizeHtml(out);
 }
 
-function renderMarkdownPreview() {
-  const container = $id("content-preview");
-  if (!container) return;
-  const content = $id("content-editor")?.value || "";
-  const attachments = getActiveEntry()?.attachments || [];
-  container.innerHTML = renderContentWithAttachments(content, attachments);
+// A v1.3.0 journal has content stored as Markdown and no attachment placements.
+// Convert it to the v2 model in memory on open. Migration is NOT marked dirty:
+// the crash-safe save only writes v2 back once the user actually edits, so the
+// original file is preserved until then (per the roadmap).
+function migrateJournalToV2() {
+  if (!currentJournal || currentJournal.version === "2.0") return;
+
+  for (const entry of currentJournal.entries || []) {
+    const attachments = Array.isArray(entry.attachments) ? entry.attachments : [];
+    for (const att of attachments) {
+      if (att.placement !== "inline" && att.placement !== "panel") {
+        att.placement = isImageMime(att.mime_type) ? "inline" : "panel";
+      }
+    }
+    // Only convert content that still looks like v1 markdown (no HTML tags yet).
+    if (typeof entry.content === "string" && !/<[a-z][\s\S]*>/i.test(entry.content)) {
+      entry.content = markdownToStoredHtml(entry.content, attachments);
+    }
+  }
+
+  currentJournal.version = "2.0";
+  if (currentJournal.metadata) currentJournal.metadata.version = "2.0";
+}
+
+// ── Formatting toolbar ──
+function bindFormatToolbar() {
+  const bar = $id("format-toolbar");
+  if (!bar) return;
+  try { document.execCommand("styleWithCSS", false, false); } catch {}
+
+  // Keep the editor selection when a toolbar button is pressed.
+  bar.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".fmt-btn")) e.preventDefault();
+  });
+  bar.addEventListener("click", (e) => {
+    const btn = e.target.closest(".fmt-btn");
+    if (btn) applyFormatCommand(btn.dataset.cmd);
+  });
+
+  const editor = $id("content-editor");
+  editor?.addEventListener("keyup", updateFormatButtonStates);
+  editor?.addEventListener("mouseup", updateFormatButtonStates);
+}
+
+function applyFormatCommand(cmd) {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  editor.focus();
+  try { document.execCommand("styleWithCSS", false, false); } catch {}
+
+  switch (cmd) {
+    case "bold": document.execCommand("bold"); break;
+    case "italic": document.execCommand("italic"); break;
+    case "underline": document.execCommand("underline"); break;
+    case "h1": toggleBlockFormat("h1"); break;
+    case "h2": toggleBlockFormat("h2"); break;
+    case "ul": document.execCommand("insertUnorderedList"); break;
+    case "ol": document.execCommand("insertOrderedList"); break;
+    case "quote": toggleBlockFormat("blockquote"); break;
+    case "link": insertLink(); break;
+  }
+
+  markDirty();
+  updateWordCount();
+  updateEditorEmptyState();
+  updateFormatButtonStates();
+}
+
+function toggleBlockFormat(tag) {
+  let current = "";
+  try { current = String(document.queryCommandValue("formatBlock")).toLowerCase(); } catch {}
+  document.execCommand("formatBlock", false, current === tag ? "p" : tag);
+}
+
+function insertLink() {
+  const url = prompt("Link-URL:");
+  if (!url) return;
+  if (!isSafeUrl(url)) {
+    showStatus("⚠ Ungültige URL", 3000);
+    return;
+  }
+  document.execCommand("createLink", false, url);
+}
+
+function updateFormatButtonStates() {
+  const bar = $id("format-toolbar");
+  if (!bar) return;
+  let block = "";
+  try { block = String(document.queryCommandValue("formatBlock")).toLowerCase(); } catch {}
+  bar.querySelectorAll(".fmt-btn").forEach((btn) => {
+    const cmd = btn.dataset.cmd;
+    let active = false;
+    try {
+      if (cmd === "bold" || cmd === "italic" || cmd === "underline") active = document.queryCommandState(cmd);
+      else if (cmd === "ul") active = document.queryCommandState("insertUnorderedList");
+      else if (cmd === "ol") active = document.queryCommandState("insertOrderedList");
+      else if (cmd === "quote") active = block === "blockquote";
+      else if (cmd === "h1" || cmd === "h2") active = block === cmd;
+    } catch {}
+    btn.classList.toggle("active", active);
+  });
 }
 
 function updateWordCount() {
-  const content = $id("content-editor")?.value || "";
+  const content = $id("content-editor")?.textContent || "";
   const words = content.trim() ? content.trim().split(/\s+/).length : 0;
   const chars = content.length;
   const metaWords = $id("meta-words");
@@ -1705,7 +1984,7 @@ function syncActiveEntry() {
   const entry = currentJournal.entries.find((e) => e.id === activeEntryId);
   if (!entry) return;
   entry.title = $id("entry-title-input")?.value || "";
-  entry.content = $id("content-editor")?.value || "";
+  entry.content = getEditorHtml();
   entry.mood = $id("mood-select")?.value || "neutral";
 }
 
@@ -1949,23 +2228,19 @@ async function exportMarkdown() {
       if (entry.tags?.length) md += `Tags: ${entry.tags.map((t) => `#${t}`).join(", ")}\n\n`;
       else md += `\n`;
 
-      let content = entry.content || "";
+      const content = entry.content || "";
+      const imgRelPaths = {};
       const fileAttachments = [];
 
       for (const attachment of entry.attachments || []) {
         const relPath = await ensureAttachmentExported(attachment, attachmentsDirPath, attachmentsDirLabel, written);
-        if (isImageMime(attachment.mime_type)) {
-          const re = new RegExp(
-            `!\\[([^\\]]*)\\]\\(attachment:${attachment.id}(?:\\s+"width=\\d+")?\\)`,
-            "g"
-          );
-          content = content.replace(re, (_, alt) => `![${alt}](${relPath})`);
-        } else {
-          fileAttachments.push({ attachment, relPath });
-        }
+        const inlineRef =
+          isImageMime(attachment.mime_type) && content.includes(`data-att-id="${attachment.id}"`);
+        if (inlineRef) imgRelPaths[attachment.id] = relPath;
+        else fileAttachments.push({ attachment, relPath });
       }
 
-      md += `${content}\n\n`;
+      md += `${htmlToMarkdown(content, imgRelPaths)}\n\n`;
 
       if (fileAttachments.length) {
         md += `**Anhänge:**\n\n`;
@@ -2008,7 +2283,7 @@ function renderSearchResults(results, query) {
         <span class="ei-date">${formatEntryDate(e.timestamp)}</span>
       </div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
-        ${highlightQuery(snippet(e.content, query), query)}
+        ${highlightQuery(snippet(htmlToPlainText(e.content), query), query)}
       </div>
     </div>`
     )
@@ -2115,15 +2390,9 @@ function filterEmojis(query) {
 }
 
 function insertEmoji(char) {
-  const textarea = $id("content-editor");
-  if (!textarea) return;
-
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  const text = textarea.value;
-  textarea.value = text.slice(0, start) + char + text.slice(end);
-  textarea.selectionStart = textarea.selectionEnd = start + char.length;
-  textarea.focus();
+  insertTextAtCursor(char);
+  updateWordCount();
+  updateEditorEmptyState();
   markDirty();
 }
 
