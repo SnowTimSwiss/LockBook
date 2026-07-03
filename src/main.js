@@ -53,6 +53,10 @@ let autoLockTimer = null;
 // here for the session (keyed by attachment id). Cleared on open/close/lock.
 const attachmentCache = new Map();
 
+// Small inline "close/remove" icon reused by dynamically-built list rows.
+// Inline SVG (not an emoji) so it renders identically on every platform.
+const IC_X = '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>';
+
 // Matches `![alt](attachment:<id> "width=<px>")` — the "width" part is optional.
 const ATTACHMENT_IMG_SOURCE = String.raw`!\[([^\]]*)\]\(attachment:([\w-]+)(?:\s+"width=(\d+)")?\)`;
 
@@ -392,7 +396,7 @@ function renderRecentJournals() {
         <span class="ri-name" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</span>
         <span class="ri-date">${formatDate(r.opened)}</span>
       </div>
-      <button class="ri-remove" data-path="${escapeHtml(r.path)}" title="Remove">✕</button>
+      <button class="ri-remove" data-path="${escapeHtml(r.path)}" title="Remove">${IC_X}</button>
     </div>`
       )
       .join("")}`;
@@ -1129,7 +1133,7 @@ function renderTags() {
     (t) => `
     <span class="tag-chip">
       ${escapeHtml(t)}
-      <button onclick="removeTag('${escapeJs(t)}')">✕</button>
+      <button onclick="removeTag('${escapeJs(t)}')">${IC_X}</button>
     </span>`
   );
 
@@ -1468,7 +1472,7 @@ function renderAttachments() {
 
   panel.style.display = "";
   if (resizer) resizer.style.display = "";
-  title.textContent = `📎 Attachments (${files.length})`;
+  title.textContent = `Attachments (${files.length})`;
 
   list.innerHTML = files
     .map(
@@ -1477,7 +1481,7 @@ function renderAttachments() {
       <span class="ac-icon">${attachmentIcon(a.mime_type)}</span>
       <span class="ac-name">${escapeHtml(a.name)}</span>
       <span class="ac-size">${formatFileSize(a.size)}</span>
-      <button class="ac-remove" data-id="${escapeHtml(a.id)}" title="Remove">✕</button>
+      <button class="ac-remove" data-id="${escapeHtml(a.id)}" title="Remove">${IC_X}</button>
     </div>`
     )
     .join("");
