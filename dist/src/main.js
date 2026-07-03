@@ -55,6 +55,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSettingsUI();
   setupEmojiPicker();
   setupKeyboardShortcuts();
+  setupCloseGuard();
 
   $id("timenc-download-link")?.addEventListener("click", (e) => {
     e.preventDefault();
@@ -64,6 +65,30 @@ document.addEventListener("DOMContentLoaded", () => {
     $id("shortcuts-modal")?.classList.add("hidden");
   });
 });
+
+// Guard against closing the window mid-save. A save rewrites the encrypted
+// journal file; if the process dies partway through, the file is left truncated
+// and can no longer be decrypted. When a close is requested with unsaved changes
+// or a save still in flight, we hold the window open, flush the save, and only
+// then destroy it.
+function setupCloseGuard() {
+  const win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!win || typeof win.onCloseRequested !== "function") return;
+
+  win.onCloseRequested(async (event) => {
+    // Nothing open, clean, and no save running → let the window close normally.
+    if (!currentJournal || (!isDirty && !savePromise)) return;
+
+    // Keep the window alive until the save has fully landed on disk.
+    event.preventDefault();
+    try {
+      await persistJournal({ skipIfClean: true });
+    } catch (err) {
+      console.error("Save on close failed:", err);
+    }
+    await win.destroy();
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  SCREEN VISIBILITY

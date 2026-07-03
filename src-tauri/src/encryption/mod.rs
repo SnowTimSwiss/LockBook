@@ -58,7 +58,18 @@ pub fn load_journal(
 }
 
 /// Serialize `JournalData` to JSON, encrypt it with TimENC, and write to
-/// `journal_path` (overwriting any existing file).
+/// `journal_path`.
+///
+/// The write is **crash-safe**: TimENC's `encrypt` truncates its output file
+/// before streaming into it, so encrypting straight onto the user's journal
+/// would destroy the original the moment a save starts — and a crash, kill, or
+/// window-close mid-write would leave a truncated file that can no longer be
+/// decrypted (surfacing as a bogus "wrong password/keyfile" error).
+///
+/// Instead we encrypt to a sibling temp file, keep a `.bak` of the previous
+/// version, and only then atomically `rename` the finished file over the
+/// target. `rename` on the same filesystem is atomic, so the journal is always
+/// either the complete old version or the complete new one — never a partial.
 pub fn save_journal(
     journal_path: &str,
     password: &str,
@@ -70,27 +81,85 @@ pub fn save_journal(
     let tmp = SecureTempDir::new()?;
 
     // Write plaintext JSON to the temp directory; TimENC encrypts it to the
-    // target path and securely deletes this plaintext copy on success.
+    // staging path and securely deletes this plaintext copy on success.
     let json_bytes = data.to_json()?;
     let json_path = tmp.path().join(JOURNAL_JSON_NAME);
     std::fs::write(&json_path, &json_bytes)?;
 
-    timenc::encrypt(
+    let target = PathBuf::from(journal_path);
+    // Stage the encrypted output next to the target so the final rename stays on
+    // the same filesystem (a cross-device rename is not atomic and would fall
+    // back to a copy).
+    let staging = staging_path_for(&target);
+
+    let encrypt_result = timenc::encrypt(
         &json_path,
         EncryptOptions {
             password: password.to_string(),
             keyfile_path: keyfile.map(PathBuf::from),
-            output_path: PathBuf::from(journal_path),
+            output_path: staging.clone(),
             compress: false,
         },
     )
-    .map_err(|e| JournalError::EncryptionFailed(e.to_string()))?;
+    .map_err(|e| JournalError::EncryptionFailed(e.to_string()));
 
     // Defensive: TimENC removes the plaintext on success, but if anything left
     // it behind, overwrite it before the temp dir is dropped.
     secure_delete_file(&json_path);
 
+    if let Err(e) = encrypt_result {
+        // The original journal was never touched; just clean up the staging file.
+        let _ = std::fs::remove_file(&staging);
+        return Err(e);
+    }
+
+    // Keep a backup of the previous version. Best-effort: the atomic rename below
+    // already guarantees safety, so a failed backup must not block the save.
+    if target.exists() {
+        let backup = with_extra_extension(&target, "bak");
+        let _ = std::fs::rename(&target, &backup)
+            .or_else(|_| std::fs::copy(&target, &backup).map(|_| ()));
+    }
+
+    // Atomically move the finished file into place.
+    if let Err(e) = std::fs::rename(&staging, &target) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(JournalError::Io(e));
+    }
+
     Ok(())
+}
+
+/// Build the staging path used while encrypting: a hidden sibling of `target`
+/// with a `.tmp` suffix, unique enough to avoid clashing with a concurrent save.
+fn staging_path_for(target: &Path) -> PathBuf {
+    let file_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "journal".to_string());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_name = format!(".{file_name}.{nanos}.tmp");
+    match target.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(tmp_name),
+        _ => PathBuf::from(tmp_name),
+    }
+}
+
+/// Append an extra extension to `path` (e.g. `diary.lbook` -> `diary.lbook.bak`).
+fn with_extra_extension(path: &Path, extra: &str) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    name.push('.');
+    name.push_str(extra);
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(name),
+        _ => PathBuf::from(name),
+    }
 }
 
 /// Create a brand-new journal file (must not already exist).
