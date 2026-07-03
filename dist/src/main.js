@@ -778,7 +778,7 @@ function bindJournalUI() {
       (en) =>
         (en.title || "").toLowerCase().includes(query) ||
         htmlToPlainText(en.content || "").toLowerCase().includes(query) ||
-        (en.tags || []).some((t) => t.includes(query))
+        (en.tags || []).some((t) => t.toLowerCase().includes(query))
     );
     renderSearchResults(results, query);
   });
@@ -1649,6 +1649,7 @@ function serializeMdNode(node, imgRelPaths) {
     case "h3": return "### " + inner() + "\n\n";
     case "strong": case "b": return "**" + inner() + "**";
     case "em": case "i": return "*" + inner() + "*";
+    case "u": return "<u>" + inner() + "</u>";
     case "code": return "`" + inner() + "`";
     case "blockquote": return "> " + inner().trim().replace(/\n/g, "\n> ") + "\n\n";
     case "ul": return listToMarkdown(node, imgRelPaths, false) + "\n";
@@ -2269,6 +2270,7 @@ async function exportMarkdown() {
   const sorted = [...currentJournal.entries].sort(
     (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
   );
+  const showMood = getJournalMode() === "journal";
 
   let md = `# ${name}\n\n`;
   md += `Exportiert am: ${formatDate(Date.now())}\n`;
@@ -2280,7 +2282,7 @@ async function exportMarkdown() {
       md += `## ${entry.title || "(Kein Titel)"}\n\n`;
       md += `Titel: ${entry.title || "(Kein Titel)"}\n`;
       md += `Datum: ${formatDate(entry.timestamp)}\n`;
-      md += `Emotion: ${entry.mood || "neutral"}\n`;
+      if (showMood) md += `Emotion: ${entry.mood || "neutral"}\n`;
       if (entry.tags?.length) md += `Tags: ${entry.tags.map((t) => `#${t}`).join(", ")}\n\n`;
       else md += `\n`;
 
