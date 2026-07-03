@@ -571,6 +571,12 @@ html.resizing-attachments * {
 .settings-error { text-align:left; min-height:0; }
 .settings-modal-box .modal-actions .btn { width:auto; }
 
+.settings-about-row {
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:13px; color:var(--text-secondary);
+}
+.settings-about-row .settings-about-value { color:var(--text-muted); font-size:12px; }
+
 .emoji-modal-box { width:480px; max-height:420px; }
 
 .paste-image-remember {

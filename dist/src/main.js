@@ -8,6 +8,10 @@ if (window.__TAURI__ && !window.__TAURI__.invoke && window.__TAURI__.core) {
   window.__TAURI__.invoke = window.__TAURI__.core.invoke;
 }
 
+// Single source of truth for the version shown in the UI (footers, settings
+// "About" section). Keep in sync with Cargo.toml / tauri.conf.json / package.json.
+const APP_VERSION = "2.0.0";
+
 // ── State ──
 let currentJournal = null;
 let currentFilePath = null;
@@ -56,6 +60,7 @@ const $id = (id) => document.getElementById(id);
 
 // ── Init ──
 document.addEventListener("DOMContentLoaded", () => {
+  applyAppVersionLabels();
   loadSidebarWidth();
   bindSidebarResize();
   loadAttachmentsHeight();
@@ -284,6 +289,12 @@ function bindAttachmentsResize() {
 
   handle.addEventListener("dblclick", () => {
     applyAttachmentsHeight(ATTACHMENTS_DEFAULT_HEIGHT, true);
+  });
+}
+
+function applyAppVersionLabels() {
+  document.querySelectorAll(".app-version").forEach((el) => {
+    el.textContent = `v${APP_VERSION}`;
   });
 }
 
@@ -832,6 +843,14 @@ function openSettingsModal() {
   $id("settings-current-password").value = "";
   $id("settings-new-password").value = "";
   $id("settings-confirm-password").value = "";
+
+  const timencEl = $id("settings-timenc-version");
+  if (timencEl) {
+    timencEl.textContent = "…";
+    window.__TAURI__.invoke("get_timenc_version")
+      .then((v) => { timencEl.textContent = v || "unknown"; })
+      .catch(() => { timencEl.textContent = "unknown"; });
+  }
 
   modal.classList.remove("hidden");
   $id("settings-journal-name")?.focus();

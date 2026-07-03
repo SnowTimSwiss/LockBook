@@ -19,6 +19,13 @@ pub struct JournalState(pub Mutex<Option<OpenJournal>>);
 /// Human-readable label for the bundled, in-process TimENC implementation.
 const TIMENC_BUNDLED: &str = "bundled (in-process)";
 
+/// Crate version of the vendored TimENC dependency. Cargo has no built-in way
+/// to expose a git-pinned dependency's version to the depending crate at
+/// compile time, so this is kept in sync by hand — update it whenever the
+/// `rev` on the `timenc` git dependency in `Cargo.toml` is bumped.
+const TIMENC_VERSION: &str = "2.2.2";
+const TIMENC_REV: &str = "6e4d631";
+
 /// Returns info about the TimENC implementation for the UI banner.
 ///
 /// TimENC is now compiled into Lockbook, so it is always available — no external
@@ -28,7 +35,7 @@ pub async fn get_timenc_info() -> serde_json::Value {
     serde_json::json!({
         "found": true,
         "path": TIMENC_BUNDLED,
-        "version": TIMENC_BUNDLED,
+        "version": format!("{} ({}, rev {})", TIMENC_VERSION, TIMENC_BUNDLED, TIMENC_REV),
         "message": "TimENC is bundled with Lockbook.",
         "searched_in": null
     })
@@ -40,10 +47,10 @@ pub async fn check_timenc_installed() -> bool {
     true
 }
 
-/// Returns the bundled TimENC label.
+/// Returns the bundled TimENC version, e.g. "2.2.2 (bundled, rev 6e4d631)".
 #[tauri::command]
 pub async fn get_timenc_version() -> Option<String> {
-    Some(TIMENC_BUNDLED.to_string())
+    Some(format!("{} ({}, rev {})", TIMENC_VERSION, TIMENC_BUNDLED, TIMENC_REV))
 }
 
 /// TimENC is in-process; there is no external binary path.
