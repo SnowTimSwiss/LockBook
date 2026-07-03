@@ -147,6 +147,14 @@
 <!-- ══════════════════════════════════════════════════════════════════════════
      MAIN JOURNAL UI
 ══════════════════════════════════════════════════════════════════════════ -->
+<!-- ── Drag & drop overlay (shown while dragging files over the window) ──── -->
+<div id="dropzone-overlay">
+  <div class="dropzone-inner">
+    <span class="dropzone-icon">📎</span>
+    <span>Drop file to attach</span>
+  </div>
+</div>
+
 <div id="journal-ui" style="display:none;flex-direction:column;height:100vh">
 
   <!-- Top bar -->
@@ -334,6 +342,24 @@
     <div class="shortcut-row"><kbd>Enter</kbd><span>Confirm password</span></div>
     <div class="modal-actions" style="margin-top:16px">
       <button class="btn btn-secondary" id="shortcuts-close-btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     PASTE IMAGE CHOICE MODAL
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="paste-image-modal" class="modal-backdrop hidden">
+  <div class="modal-box" style="width:360px">
+    <div class="modal-title">🖼 Pasted image</div>
+    <div class="modal-subtitle" style="margin-bottom:14px">Insert it into the text or add it as a file attachment?</div>
+    <label class="paste-image-remember">
+      <input type="checkbox" id="paste-image-remember"/>
+      Remember my choice
+    </label>
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="btn btn-secondary" id="paste-image-attach-btn">📎 As attachment</button>
+      <button class="btn btn-primary" id="paste-image-inline-btn">🖼 Insert into text</button>
     </div>
   </div>
 </div>

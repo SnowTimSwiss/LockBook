@@ -27,6 +27,10 @@ const SIDEBAR_DEFAULT_WIDTH = 270;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
 
+// "inline" | "attachment" — remembered choice for pasted images, see
+// resolvePasteImageChoice().
+const PASTE_IMAGE_PREF_KEY = "lockbook_paste_image_pref";
+
 // Matches `![alt](attachment:<id> "width=<px>")` — the "width" part is optional.
 const ATTACHMENT_IMG_SOURCE = String.raw`!\[([^\]]*)\]\(attachment:([\w-]+)(?:\s+"width=(\d+)")?\)`;
 
@@ -571,6 +575,8 @@ function bindJournalUI() {
   // Attachments
   bindAttachmentButtons();
   bindAttachmentResize();
+  bindDragAndDropAttach();
+  bindImagePaste();
 
   // Delete entry
   $id("delete-entry-btn")?.addEventListener("click", deleteCurrentEntry);
@@ -1026,6 +1032,124 @@ function bindAttachmentButtons() {
   $id("btn-attach-file-2")?.addEventListener("click", handleAttachFile);
 }
 
+// Tauri intercepts native OS file drops at the window level (dataTransfer
+// carries no files in the webview), so dragged-in files are picked up via
+// the Tauri drag-drop event instead of DOM `drop` listeners.
+async function bindDragAndDropAttach() {
+  const webview = window.__TAURI__?.webview?.getCurrentWebview?.();
+  if (!webview) return;
+
+  const overlay = $id("dropzone-overlay");
+
+  await webview.onDragDropEvent((event) => {
+    const { type } = event.payload;
+
+    if (type === "over") {
+      if (getActiveEntry()) overlay?.classList.add("active");
+      return;
+    }
+
+    overlay?.classList.remove("active");
+    if (type !== "drop") return;
+
+    const entry = getActiveEntry();
+    if (!entry) {
+      showStatus("⚠ Bitte zuerst einen Eintrag auswählen", 3000);
+      return;
+    }
+
+    const paths = event.payload.paths || [];
+    paths.reduce((chain, path) => chain.then(() => attachFilePath(path)), Promise.resolve());
+  });
+}
+
+// Pasting an image from the clipboard (Ctrl+V) attaches it just like a
+// dragged-in or picked file, but since it's ambiguous whether the user wants
+// it inline or as a plain attachment, we ask — and remember the answer if
+// they check the box.
+function bindImagePaste() {
+  $id("content-editor")?.addEventListener("paste", handleEditorPaste);
+}
+
+async function handleEditorPaste(e) {
+  if (!getActiveEntry()) return;
+
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageItem = items.find((it) => it.kind === "file" && it.type.startsWith("image/"));
+  if (!imageItem) return; // let normal text paste go through
+
+  const file = imageItem.getAsFile();
+  if (!file) return;
+
+  e.preventDefault();
+
+  try {
+    const attachment = await fileToAttachment(file);
+    const choice = await resolvePasteImageChoice();
+    if (!choice) return; // user cancelled the dialog
+    await finalizeAttachment(attachment, { forceAttachmentPanel: choice === "attachment" });
+  } catch (err) {
+    showStatus("⚠ Einfügen fehlgeschlagen: " + err, 5000);
+  }
+}
+
+async function fileToAttachment(file) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  const mimeType = file.type || "image/png";
+  const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+
+  return {
+    id: crypto.randomUUID(),
+    name: `pasted-image-${Date.now()}.${ext}`,
+    mime_type: mimeType,
+    size: file.size,
+    data: dataUrl.split(",", 2)[1] || "",
+  };
+}
+
+// Resolves to "inline" or "attachment". Uses the remembered preference if
+// one was saved; otherwise shows the choice modal and waits for a click
+// (or Escape, which resolves to null / cancel).
+function resolvePasteImageChoice() {
+  const remembered = localStorage.getItem(PASTE_IMAGE_PREF_KEY);
+  if (remembered === "inline" || remembered === "attachment") return Promise.resolve(remembered);
+
+  const modal = $id("paste-image-modal");
+  const inlineBtn = $id("paste-image-inline-btn");
+  const attachBtn = $id("paste-image-attach-btn");
+  const rememberCheckbox = $id("paste-image-remember");
+  if (!modal || !inlineBtn || !attachBtn || !rememberCheckbox) return Promise.resolve("inline");
+
+  return new Promise((resolve) => {
+    rememberCheckbox.checked = false;
+    modal.classList.remove("hidden");
+
+    const finish = (choice) => {
+      if (choice && rememberCheckbox.checked) localStorage.setItem(PASTE_IMAGE_PREF_KEY, choice);
+      modal.classList.add("hidden");
+      inlineBtn.removeEventListener("click", onInline);
+      attachBtn.removeEventListener("click", onAttach);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(choice);
+    };
+
+    const onInline = () => finish("inline");
+    const onAttach = () => finish("attachment");
+    const onKeydown = (ev) => {
+      if (ev.key === "Escape") finish(null);
+    };
+
+    inlineBtn.addEventListener("click", onInline);
+    attachBtn.addEventListener("click", onAttach);
+    document.addEventListener("keydown", onKeydown);
+  });
+}
+
 function handleInsertImage() {
   return pickAndAttach([{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] }]);
 }
@@ -1044,46 +1168,68 @@ async function pickAndAttach(filters) {
   const path = await window.__TAURI__.dialog.open(filters ? { filters } : {});
   if (!path) return;
 
+  await attachFilePath(path);
+}
+
+// Also used by drag-and-drop, which hands us a filesystem path directly
+// instead of going through the native file picker dialog.
+async function attachFilePath(path) {
+  const entry = getActiveEntry();
+  if (!entry) return;
+
   try {
     const attachment = await window.__TAURI__.invoke("read_attachment_file", { path });
-
-    if (isImageMime(attachment.mime_type)) {
-      const { width, height } = await loadImageDimensions(attachment);
-      attachment.width = width;
-      attachment.height = height;
-      const displayWidth = Math.min(width || 480, 480);
-
-      if (!Array.isArray(entry.attachments)) entry.attachments = [];
-      entry.attachments.push(attachment);
-      insertAtCursor(`![${escapeMdText(attachment.name)}](attachment:${attachment.id} "width=${displayWidth}")`);
-    } else {
-      if (!Array.isArray(entry.attachments)) entry.attachments = [];
-      entry.attachments.push(attachment);
-      showStatus(`Angehängt: ${attachment.name}`, 3000);
-    }
-
-    markDirty();
-    renderAttachments();
-    if ($id("content-preview")?.classList.contains("active")) renderMarkdownPreview();
+    await finalizeAttachment(attachment);
   } catch (err) {
     showStatus("⚠ Anhängen fehlgeschlagen: " + err, 5000);
   }
 }
 
+// Shared tail end of every "attach this file to the active entry" flow
+// (file picker, drag-and-drop, clipboard paste). Images normally go inline
+// at the cursor; `forceAttachmentPanel` lets a pasted image be added to the
+// attachments panel instead, per the user's paste choice.
+async function finalizeAttachment(attachment, { forceAttachmentPanel = false } = {}) {
+  const entry = getActiveEntry();
+  if (!entry) return;
+
+  if (!Array.isArray(entry.attachments)) entry.attachments = [];
+
+  if (isImageMime(attachment.mime_type) && !forceAttachmentPanel) {
+    const { width, height } = await loadImageDimensions(attachment);
+    attachment.width = width;
+    attachment.height = height;
+    const displayWidth = Math.min(width || 480, 480);
+
+    entry.attachments.push(attachment);
+    insertAtCursor(`![${escapeMdText(attachment.name)}](attachment:${attachment.id} "width=${displayWidth}")`);
+  } else {
+    entry.attachments.push(attachment);
+    showStatus(`Angehängt: ${attachment.name}`, 3000);
+  }
+
+  markDirty();
+  renderAttachments();
+  if ($id("content-preview")?.classList.contains("active")) renderMarkdownPreview();
+}
+
 function renderAttachments() {
+  const panel = $id("attachments-panel");
   const list = $id("attachments-list");
   const title = $id("attachments-title");
-  if (!list || !title) return;
+  if (!panel || !list || !title) return;
 
   const entry = getActiveEntry();
   const files = (entry?.attachments || []).filter((a) => !isImageMime(a.mime_type));
 
-  title.textContent = `📎 Attachments (${files.length})`;
-
   if (files.length === 0) {
-    list.innerHTML = `<div class="attachments-empty">No files attached</div>`;
+    panel.style.display = "none";
+    list.innerHTML = "";
     return;
   }
+
+  panel.style.display = "";
+  title.textContent = `📎 Attachments (${files.length})`;
 
   list.innerHTML = files
     .map(
@@ -1890,6 +2036,7 @@ function setupKeyboardShortcuts() {
       $id("emoji-modal")?.classList.add("hidden");
       $id("shortcuts-modal")?.classList.add("hidden");
       $id("settings-modal")?.classList.add("hidden");
+      $id("paste-image-modal")?.classList.add("hidden");
     }
   });
 }
