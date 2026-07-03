@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use tauri::State;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::encryption;
 use crate::error::{JournalError, Result};
@@ -353,6 +354,64 @@ pub async fn read_attachment_file(path: String) -> Result<Attachment> {
     })
     .await
     .unwrap_or_else(|err| Err(join_error(err)))
+}
+
+/// Encode a raw RGBA image buffer as PNG bytes.
+fn encode_rgba_as_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| JournalError::InvalidFormat(e.to_string()))?;
+    writer
+        .write_image_data(rgba)
+        .map_err(|e| JournalError::InvalidFormat(e.to_string()))?;
+    writer
+        .finish()
+        .map_err(|e| JournalError::InvalidFormat(e.to_string()))?;
+    Ok(out)
+}
+
+/// Read an image from the system clipboard and return it as a PNG-encoded,
+/// base64-embedded `Attachment` (or `None` if the clipboard holds no image).
+///
+/// On Linux/WebKitGTK the webview's DOM `paste` event never carries the pasted
+/// image, so the frontend falls back to this command to support Ctrl+V of
+/// screenshots and copied images. The raw clipboard bitmap is RGBA, so we
+/// re-encode it to PNG to match how other image attachments are stored.
+#[tauri::command]
+pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<Attachment>> {
+    // Clipboard access happens on the command thread; only the (potentially
+    // heavier) PNG encoding is offloaded to a blocking worker.
+    let (rgba, width, height) = match app.clipboard().read_image() {
+        Ok(img) => (img.rgba().to_vec(), img.width(), img.height()),
+        Err(_) => return Ok(None), // no image on the clipboard
+    };
+
+    if width == 0 || height == 0 || rgba.is_empty() {
+        return Ok(None);
+    }
+
+    let png_bytes = tauri::async_runtime::spawn_blocking(move || {
+        encode_rgba_as_png(&rgba, width, height)
+    })
+    .await
+    .unwrap_or_else(|err| Err(join_error(err)))?;
+
+    let size = png_bytes.len() as u64;
+    let ts = chrono::Utc::now().timestamp_millis();
+
+    Ok(Some(Attachment {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: format!("pasted-image-{ts}.png"),
+        mime_type: "image/png".to_string(),
+        size,
+        data: BASE64.encode(&png_bytes),
+        width: Some(width),
+        height: Some(height),
+    }))
 }
 
 /// Decode a base64 attachment and write it to a fresh temp directory so an

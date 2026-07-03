@@ -16,6 +16,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(JournalState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             // TimENC helpers
@@ -42,6 +43,7 @@ fn main() {
             commands::write_text_file,
             // Attachments
             commands::read_attachment_file,
+            commands::read_clipboard_image,
             commands::write_temp_attachment,
             commands::write_binary_file,
         ])

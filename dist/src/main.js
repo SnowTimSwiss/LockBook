@@ -586,7 +586,16 @@ function bindLockScreen() {
   });
 }
 
+// Guards against a second unlock being started while one is already running.
+// Decrypting a large (image-heavy) journal can take seconds, and the button
+// gives no built-in feedback — without this, impatient re-clicks would each
+// kick off another concurrent decryption, competing for CPU and making every
+// attempt slower ("only works on the third try").
+let isUnlocking = false;
+
 async function doUnlockJournal() {
+  if (isUnlocking) return;
+
   const password = $id("lock-password")?.value;
   const keyfile = $id("lock-keyfile")?.value;
 
@@ -601,6 +610,8 @@ async function doUnlockJournal() {
 
   currentKeyfile = keyfile || null;
 
+  isUnlocking = true;
+  setUnlockBusy(true);
   try {
     const result = await window.__TAURI__.invoke("open_journal", {
       path: currentFilePath,
@@ -615,6 +626,27 @@ async function doUnlockJournal() {
     enterJournalUI();
   } catch (err) {
     showLockError(err.toString());
+  } finally {
+    isUnlocking = false;
+    setUnlockBusy(false);
+  }
+}
+
+// Toggle the unlock button between its idle label and a disabled "busy" state
+// with a spinner, so the user gets immediate feedback and can't re-trigger the
+// decryption mid-flight.
+function setUnlockBusy(busy) {
+  const btn = $id("lock-submit-btn");
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.idleLabel = btn.textContent;
+    btn.disabled = true;
+    btn.classList.add("btn-loading");
+    btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Entschlüssele…';
+  } else {
+    btn.disabled = false;
+    btn.classList.remove("btn-loading");
+    btn.textContent = btn.dataset.idleLabel || "Unlock";
   }
 }
 
@@ -1156,17 +1188,29 @@ function bindImagePaste() {
 async function handleEditorPaste(e) {
   if (!getActiveEntry()) return;
 
+  // Path 1 — DOM clipboard: works on most platforms/webviews.
   const items = Array.from(e.clipboardData?.items || []);
   const imageItem = items.find((it) => it.kind === "file" && it.type.startsWith("image/"));
-  if (!imageItem) return; // let normal text paste go through
 
-  const file = imageItem.getAsFile();
-  if (!file) return;
-
-  e.preventDefault();
+  let attachment = null;
+  if (imageItem) {
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    attachment = await fileToAttachment(file);
+  } else {
+    // Path 2 — native clipboard: WebKitGTK (Linux) never puts pasted images
+    // into the DOM event, so ask the backend. Returns null when the clipboard
+    // holds no image, in which case we let the normal text paste proceed.
+    try {
+      attachment = await window.__TAURI__.invoke("read_clipboard_image");
+    } catch {
+      attachment = null;
+    }
+    if (!attachment) return;
+  }
 
   try {
-    const attachment = await fileToAttachment(file);
     const choice = await resolvePasteImageChoice();
     if (!choice) return; // user cancelled the dialog
     await finalizeAttachment(attachment, { forceAttachmentPanel: choice === "attachment" });

@@ -15,6 +15,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+# Native clipboard access: WebKitGTK (Linux) does not expose pasted images to the
+# webview's DOM `paste` event, so image paste is read through this plugin instead.
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.6", features = ["v4", "serde"] }
@@ -27,10 +30,27 @@ thiserror = "1.0"
 timenc = { git = "https://github.com/SnowTimSwiss/TimENC.git", rev = "6e4d631b9c4427aade728a53ff14432a9a309cb3", default-features = false }
 dirs = "5.0"
 base64 = "0.22"
+# Encodes raw RGBA clipboard images to PNG before embedding them as attachments.
+png = "0.17"
 zeroize = { version = "1.7", features = ["derive"] }
 log = "0.4"
 env_logger = "0.10"
 
 [profile.release]
-opt-level = "s"
+# opt-level = 3 (speed) instead of "s" (size): the app links TimENC's Argon2 KDF
+# and ChaCha20 cipher in-process, and their hot loops are dramatically slower when
+# optimized for size. This keeps unlock/create in the millisecond range.
+opt-level = 3
 strip = true
+
+# Keep the cryptographic dependencies optimized even in debug/`tauri dev` builds.
+# Without this, Argon2 runs unoptimized and a single key derivation takes several
+# seconds, making every unlock/create feel like it hangs during development.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.timenc]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

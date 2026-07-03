@@ -116,6 +116,17 @@ body {
 .btn-secondary:hover:not(:disabled) { background:var(--bg-hover); }
 .btn-sm { padding:5px 10px; font-size:12px; }
 
+/* Busy state: keep the button fully opaque (not the greyed-out :disabled look)
+   and show an inline spinner next to the label. */
+.btn-loading { display:inline-flex; align-items:center; justify-content:center; gap:8px; }
+.btn-loading:disabled { opacity:1; }
+.btn-spinner {
+  width:14px; height:14px; flex:0 0 auto;
+  border:2px solid rgba(255,255,255,.35); border-top-color:#fff;
+  border-radius:50%; animation:btn-spin .6s linear infinite;
+}
+@keyframes btn-spin { to { transform:rotate(360deg); } }
+
 .divider {
   display:flex; align-items:center; gap:8px;
   color:var(--text-muted); font-size:12px;
