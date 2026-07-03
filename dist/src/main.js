@@ -1325,11 +1325,13 @@ async function finalizeAttachment(attachment, { forceAttachmentPanel = false } =
     const { width, height } = await loadImageDimensions(attachment);
     attachment.width = width;
     attachment.height = height;
+    attachment.placement = "inline";
     const displayWidth = Math.min(width || 480, 480);
 
     entry.attachments.push(attachment);
     insertAtCursor(`![${escapeMdText(attachment.name)}](attachment:${attachment.id} "width=${displayWidth}")`);
   } else {
+    attachment.placement = "panel";
     entry.attachments.push(attachment);
     showStatus(`Angehängt: ${attachment.name}`, 3000);
   }

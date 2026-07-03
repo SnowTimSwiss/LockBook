@@ -7,6 +7,22 @@ pub use entry::JournalEntry;
 
 use crate::error::{JournalError, Result};
 
+/// How a journal presents itself. `Journal` enables diary features (date-as-title,
+/// mood/emotions); `General` is a plain notes mode. v1.3.0 files have no mode and
+/// default to `Journal`, matching their existing behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum JournalMode {
+    Journal,
+    General,
+}
+
+impl Default for JournalMode {
+    fn default() -> Self {
+        JournalMode::Journal
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct JournalMetadata {
@@ -16,6 +32,8 @@ pub struct JournalMetadata {
     pub modified: DateTime<Utc>,
     pub app: String,
     pub version: String,
+    #[serde(default)]
+    pub mode: JournalMode,
 }
 
 impl Default for JournalMetadata {
@@ -27,6 +45,7 @@ impl Default for JournalMetadata {
             modified: now,
             app: "TimENC-Journal".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            mode: JournalMode::default(),
         }
     }
 }

@@ -87,10 +87,6 @@ The two headline changes:
 
 Core (P1–P5) + **Auto-lock** + **whole-journal export** (P6).
 
-## Deferred to v2.1+
-
-- Journal templates / daily prompts.
-- Calendar / streak view.
 
 ## Already shipped on `main` (pre-v2, bug fixes for v1.3.0)
 

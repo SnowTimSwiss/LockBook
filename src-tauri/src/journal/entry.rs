@@ -18,6 +18,24 @@ impl Default for Mood {
     }
 }
 
+/// Where an attachment lives in the UI. `Inline` images are referenced from the
+/// entry's HTML content via `<img data-att-id="…">`; `Panel` attachments (any
+/// file, including images the user chose not to inline) show in the attachments
+/// panel. v1.3.0 journals have no placement — migration derives it (images →
+/// inline, other files → panel).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentPlacement {
+    Inline,
+    Panel,
+}
+
+impl Default for AttachmentPlacement {
+    fn default() -> Self {
+        AttachmentPlacement::Inline
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub id: String,
@@ -31,6 +49,8 @@ pub struct Attachment {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
+    #[serde(default)]
+    pub placement: AttachmentPlacement,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

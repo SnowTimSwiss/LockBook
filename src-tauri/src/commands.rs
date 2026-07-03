@@ -7,7 +7,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use crate::encryption;
 use crate::error::{JournalError, Result};
 use crate::journal::{
-    entry::{Attachment, JournalEntry},
+    entry::{Attachment, AttachmentPlacement, JournalEntry},
     JournalData, OpenJournal,
 };
 
@@ -342,14 +342,24 @@ pub async fn read_attachment_file(path: String) -> Result<Attachment> {
             .unwrap_or("attachment")
             .to_string();
 
+        let mime_type = guess_mime_type(p);
+        // Sensible default; the frontend sets the definitive placement based on
+        // the user's inline-vs-panel choice.
+        let placement = if mime_type.starts_with("image/") {
+            AttachmentPlacement::Inline
+        } else {
+            AttachmentPlacement::Panel
+        };
+
         Ok(Attachment {
             id: uuid::Uuid::new_v4().to_string(),
             name,
-            mime_type: guess_mime_type(p),
+            mime_type,
             size,
             data: BASE64.encode(&bytes),
             width: None,
             height: None,
+            placement,
         })
     })
     .await
@@ -411,6 +421,9 @@ pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<Attach
         data: BASE64.encode(&png_bytes),
         width: Some(width),
         height: Some(height),
+        // Pasted images default to inline; the frontend overrides to panel if the
+        // user picks that in the paste dialog.
+        placement: AttachmentPlacement::Inline,
     }))
 }
 
