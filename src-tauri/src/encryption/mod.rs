@@ -97,11 +97,14 @@ fn load_timenc_journal(
 /// (This also means no plaintext is ever written to disk, unlike the legacy
 /// TimENC path which staged a plaintext JSON copy.)
 ///
-/// **Round-trip safety net:** before the atomic rename, the freshly-written
-/// staging container is decrypted again and compared byte-for-byte against the
-/// input. If they differ, the save aborts and the original file is left
-/// untouched — so a bug in the container format can at worst *refuse* to save,
-/// never corrupt or lose data.
+/// **Round-trip safety net:** the freshly-built container bytes are decrypted
+/// again *in memory* and compared byte-for-byte against the input **before**
+/// anything is written. If they differ, the save aborts and the original file is
+/// left untouched — so a bug in the container format can at worst *refuse* to
+/// save, never corrupt or lose data. Verifying the in-memory buffer (rather than
+/// re-opening the staging file) also means the save cannot be blocked by a
+/// location that allows writing a file but not immediately re-opening it by path,
+/// such as a Flatpak document portal or some network/FUSE mounts.
 pub fn save_journal(
     journal_path: &str,
     password: &str,
@@ -116,24 +119,19 @@ pub fn save_journal(
     // back to a copy).
     let staging = staging_path_for(&target);
 
-    let mut session = match container::write_container(&staging, password, keyfile, data) {
-        Ok(session) => session,
-        Err(e) => {
-            // The original journal was never touched; just clean up any partial staging.
-            let _ = std::fs::remove_file(&staging);
-            return Err(e);
-        }
-    };
+    // Build and verify the container entirely in memory *before* writing anything.
+    // The round-trip decrypt runs against the freshly-built byte buffer, not a
+    // re-opened staging file — so a save can never be blocked by a location that
+    // permits writing but not immediately re-opening by path (Flatpak document
+    // portals, some network/FUSE mounts). A corruption bug can therefore at worst
+    // refuse to save, never write bad bytes or corrupt the existing file.
+    let (bytes, mut session) = container::build_container(password, keyfile, data)?;
 
-    // Round-trip verification: re-read the staging container and confirm it
-    // decrypts back to exactly the data we were asked to save. Both sides are
-    // compared via canonical JSON, which is deterministic for our data model.
-    match container::read_container(&staging, password, keyfile) {
+    match container::read_container_from_bytes(&bytes, password, keyfile) {
         Ok(reloaded) => {
             let want = data.to_json()?;
             let got = reloaded.to_json()?;
             if want != got {
-                let _ = std::fs::remove_file(&staging);
                 return Err(JournalError::EncryptionFailed(
                     "container round-trip verification failed; save aborted, original file kept"
                         .to_string(),
@@ -141,7 +139,6 @@ pub fn save_journal(
             }
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&staging);
             return Err(JournalError::EncryptionFailed(format!(
                 "container round-trip verification failed ({e}); save aborted, original file kept"
             )));
@@ -149,19 +146,32 @@ pub fn save_journal(
     }
 
     // Keep a hidden rolling backup of the previous version next to the journal.
-    // Best-effort: the atomic rename below already guarantees crash-safety, so a
-    // failed backup must not block the save. The name is dot-prefixed so file
-    // managers hide it — the user only ever sees the journal file itself.
+    // Best-effort: a failed backup must not block the save. The name is
+    // dot-prefixed so file managers hide it — the user only ever sees the journal.
     if target.exists() {
         let backup = hidden_backup_path_for(&target);
-        let _ = std::fs::rename(&target, &backup)
-            .or_else(|_| std::fs::copy(&target, &backup).map(|_| ()));
+        let _ = std::fs::copy(&target, &backup);
     }
 
-    // Atomically move the finished file into place.
-    if let Err(e) = std::fs::rename(&staging, &target) {
+    // Verified in memory — commit the bytes to disk. Prefer the crash-safe path:
+    // write a sibling staging file, then `rename` it atomically over the target
+    // (same-filesystem rename is atomic, so the journal is always either fully the
+    // old or fully the new version). If the location rejects that dance — e.g. a
+    // Flatpak document portal that only exposes the originally-opened file and
+    // won't accept a renamed sibling — fall back to writing the already-verified
+    // bytes straight to the target. The `.bak` copy above still holds the prior
+    // version either way.
+    let atomic = std::fs::write(&staging, &bytes)
+        .and_then(|()| std::fs::rename(&staging, &target));
+    if let Err(atomic_err) = atomic {
         let _ = std::fs::remove_file(&staging);
-        return Err(JournalError::Io(e));
+        if let Err(direct_err) = std::fs::write(&target, &bytes) {
+            return Err(JournalError::EncryptionFailed(format!(
+                "could not write journal to {} (atomic: {atomic_err}; direct: {direct_err}); \
+                 save aborted",
+                target.display()
+            )));
+        }
     }
 
     // The bytes are unchanged by the rename; repoint the session at the final
@@ -264,6 +274,126 @@ fn find_json_in_dir(dir: &Path) -> Result<PathBuf> {
     Err(JournalError::InvalidFormat(
         "Decrypted archive does not contain a JSON file".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::entry::{Attachment, AttachmentPlacement, JournalEntry, Mood};
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
+    fn journal_with_attachment(data_b64: String) -> JournalData {
+        let mut data = JournalData::default();
+        let mut entry = JournalEntry::new("Test");
+        entry.mood = Mood::Neutral;
+        entry.attachments.push(Attachment {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "img.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 3,
+            data: data_b64,
+            width: Some(1),
+            height: Some(1),
+            placement: AttachmentPlacement::Inline,
+        });
+        data.entries.push(entry);
+        data
+    }
+
+    /// Encrypt `journal_json` as a legacy v1.3.0-style TimENC file at
+    /// `<dir>/diary.lockbook` and return its path. `dir` must outlive the file.
+    fn write_legacy_journal(dir: &Path, journal_json: &str, keyfile: Option<&Path>) -> PathBuf {
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let json_path = src_dir.join("journal.json");
+        std::fs::write(&json_path, journal_json.as_bytes()).unwrap();
+
+        let legacy_path = dir.join("diary.lockbook");
+        timenc::encrypt(
+            &json_path,
+            timenc::EncryptOptions {
+                password: "pw".to_string(),
+                keyfile_path: keyfile.map(|p| p.to_path_buf()),
+                output_path: legacy_path.clone(),
+                compress: false,
+            },
+        )
+        .expect("legacy encrypt");
+        legacy_path
+    }
+
+    #[test]
+    fn save_journal_with_attachment_roundtrips() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("diary.lbook");
+        let data = journal_with_attachment(BASE64.encode([1u8, 2, 3]));
+        let res = save_journal(path.to_str().unwrap(), "pw", None, &data);
+        assert!(res.is_ok(), "save failed: {:?}", res.err());
+    }
+
+    #[test]
+    fn save_journal_with_empty_attachment_data() {
+        // A migrated v1 attachment whose bytes were stripped and never refilled.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("diary.lbook");
+        let data = journal_with_attachment(String::new());
+        let res = save_journal(path.to_str().unwrap(), "pw", None, &data);
+        assert!(res.is_ok(), "save failed: {:?}", res.err());
+    }
+
+    #[test]
+    fn save_twice_same_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("diary.lbook");
+        let data = journal_with_attachment(BASE64.encode([9u8, 9, 9]));
+        let p = path.to_str().unwrap();
+        save_journal(p, "pw", None, &data).expect("first save");
+        let res = save_journal(p, "pw", None, &data);
+        assert!(res.is_ok(), "second save failed: {:?}", res.err());
+    }
+
+    /// The end-to-end v1.3.0 → v2 migration a user hits on close: open a legacy
+    /// TimENC journal, then save it, which rewrites it as an `LBOOK2` container.
+    #[test]
+    fn migrate_v1_then_save() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // v1.3.0 stored images inline in `content` as data: URIs and left
+        // `entries[].attachments` empty (in v1 it was a `Vec<String>`).
+        let v1_json = r#"{"version":"1.0","entries":[{"id":"e1","timestamp":"2023-01-01T00:00:00Z","title":"Old","content":"<img src=\"data:image/png;base64,iVBORw0KGgo=\">","tags":[],"mood":"happy","attachments":[]}],"metadata":{"created":"2023-01-01T00:00:00Z","modified":"2023-01-01T00:00:00Z","app":"TimENC-Journal","version":"1.3.0"}}"#;
+        let legacy = write_legacy_journal(dir.path(), v1_json, None);
+
+        let loaded = load_journal(legacy.to_str().unwrap(), "pw", None).expect("migrate load");
+        let res = save_journal(legacy.to_str().unwrap(), "pw", None, &loaded);
+        assert!(res.is_ok(), "migrated save failed: {:?}", res.err());
+    }
+
+    /// Same migration but the legacy journal was protected with a keyfile.
+    #[test]
+    fn migrate_v1_with_keyfile_then_save() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let keyfile = dir.path().join("secret.key");
+        timenc::generate_keyfile(&keyfile).expect("gen keyfile");
+        let kf = keyfile.to_str().unwrap();
+
+        let v1_json = r#"{"version":"1.0","entries":[{"id":"e1","timestamp":"2023-01-01T00:00:00Z","title":"t","content":"c","tags":[],"mood":"neutral","attachments":[]}],"metadata":{"created":"2023-01-01T00:00:00Z","modified":"2023-01-01T00:00:00Z","app":"TimENC-Journal","version":"1.3.0"}}"#;
+        let legacy = write_legacy_journal(dir.path(), v1_json, Some(&keyfile));
+
+        let loaded = load_journal(legacy.to_str().unwrap(), "pw", Some(kf)).expect("migrate load");
+        let res = save_journal(legacy.to_str().unwrap(), "pw", Some(kf), &loaded);
+        assert!(res.is_ok(), "keyfile migrated save failed: {:?}", res.err());
+    }
+
+    /// The in-memory round-trip verifier must genuinely decrypt: a tampered
+    /// buffer must fail authentication rather than pass verification.
+    #[test]
+    fn in_memory_verify_detects_corruption() {
+        let data = journal_with_attachment(BASE64.encode([7u8, 7, 7]));
+        let (mut bytes, _s) = container::build_container("pw", None, &data).expect("build");
+        let i = bytes.len() - 1;
+        bytes[i] ^= 0xFF;
+        let res = container::read_container_from_bytes(&bytes, "pw", None);
+        assert!(res.is_err(), "tampered container must not verify");
+    }
 }
 
 /// Best-effort secure delete of a plaintext file (overwrite with zeros, remove).

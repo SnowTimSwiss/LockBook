@@ -1,5 +1,9 @@
 /* ── Variables ──────────────────────────────────────────────────────────── */
 :root {
+  /* Render native form controls (select dropdowns, their popups, scrollbars)
+     in dark mode — without this, WebKitGTK draws them white regardless of the
+     CSS background we set on the control. */
+  color-scheme: dark;
   --bg-base:        #0f1117;
   --bg-surface:     #171b26;
   --bg-raised:      #1e2333;

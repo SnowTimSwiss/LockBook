@@ -53,6 +53,14 @@ let autoLockTimer = null;
 // here for the session (keyed by attachment id). Cleared on open/close/lock.
 const attachmentCache = new Map();
 
+// Attachments the user opened in an external app (id → { path, data }), where
+// `path` is the decrypted temp copy handed to the OS and `data` is the base64 we
+// last wrote/read for it. Editing that file in an external editor (e.g. saving a
+// MuseScore file) changes the temp copy but not the journal, so before every
+// save we read these back and fold any external edits into the attachment.
+// Cleared on close/lock.
+const externalAttachmentEdits = new Map();
+
 // Small inline "close/remove" icon reused by dynamically-built list rows.
 // Inline SVG (not an emoji) so it renders identically on every platform.
 const IC_X = '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>';
@@ -82,6 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadRecentJournals();
   loadAutoLockMinutes();
   bindAutoLockActivity();
+  bindExternalAttachmentSync();
   scheduleTimEncCheck();
   bindWelcomeButtons();
   bindCreateScreen();
@@ -691,6 +700,7 @@ async function doUnlockJournal() {
     });
 
     attachmentCache.clear(); // fresh journal → drop any cached blob bytes
+    externalAttachmentEdits.clear(); // …and forget any prior external-edit tracking
     currentJournal = result;
     currentPassword = password;
 
@@ -714,7 +724,7 @@ function setUnlockBusy(busy) {
     btn.dataset.idleLabel = btn.textContent;
     btn.disabled = true;
     btn.classList.add("btn-loading");
-    btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Entschlüssele…';
+    btn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Decrypting…';
   } else {
     btn.disabled = false;
     btn.classList.remove("btn-loading");
@@ -1502,20 +1512,108 @@ async function openAttachment(id) {
   const attachment = entry?.attachments?.find((a) => a.id === id);
   if (!attachment) return;
 
+  // Already opened externally this session: reopen the very same temp copy so
+  // the user keeps working on their edited file instead of a fresh export of the
+  // (possibly stale) in-memory bytes. Their edits are folded back on save/focus.
+  const existing = externalAttachmentEdits.get(id);
+  if (existing) {
+    try {
+      await window.__TAURI__.shell.open(existing.path);
+      return;
+    } catch {
+      externalAttachmentEdits.delete(id); // temp copy is gone — re-export below
+    }
+  }
+
   try {
     const dataBase64 = await getAttachmentBytes(attachment);
     if (!dataBase64) {
-      showStatus("⚠ Anhang konnte nicht geladen werden", 5000);
+      showStatus("⚠ Could not load attachment", 5000);
       return;
     }
     const path = await window.__TAURI__.invoke("write_temp_attachment", {
       name: attachment.name,
       dataBase64,
     });
+    // Remember this temp copy so external edits get folded back in on save.
+    externalAttachmentEdits.set(id, { path, data: dataBase64 });
     await window.__TAURI__.shell.open(path);
   } catch (err) {
-    showStatus("⚠ Konnte Anhang nicht öffnen: " + err, 5000);
+    showStatus("⚠ Could not open attachment: " + err, 5000);
   }
+}
+
+// Find an attachment by id across every entry (external edits may target an
+// attachment that isn't in the currently-open entry).
+function findAttachmentById(id) {
+  for (const entry of currentJournal?.entries || []) {
+    const att = entry.attachments?.find((a) => a.id === id);
+    if (att) return att;
+  }
+  return null;
+}
+
+// Re-read every externally-opened attachment's temp copy and, if the file
+// changed on disk, fold the new bytes back into the attachment so the next save
+// persists them. Marks the journal dirty when anything changed. Best-effort:
+// a missing/unreadable temp file just leaves the stored copy untouched.
+async function syncExternalAttachmentEdits() {
+  if (externalAttachmentEdits.size === 0) return;
+  let changedNames = [];
+  let tooLargeNames = [];
+  let touchedImage = false;
+  for (const [id, info] of externalAttachmentEdits) {
+    const att = findAttachmentById(id);
+    if (!att) {
+      externalAttachmentEdits.delete(id);
+      continue;
+    }
+    let updated;
+    try {
+      updated = await window.__TAURI__.invoke("read_attachment_file", { path: info.path });
+    } catch (err) {
+      // A file edited past the attachment size limit must NOT be dropped
+      // silently — the user would think their edit was saved. Flag it loudly.
+      // Other errors (temp copy gone/unreadable) just keep the stored bytes.
+      if (/too large/i.test(err?.toString?.() || String(err))) tooLargeNames.push(att.name);
+      continue;
+    }
+    if (!updated || typeof updated.data !== "string" || updated.data === info.data) continue;
+
+    att.data = updated.data;
+    att.size = updated.size;
+    info.data = updated.data;
+    attachmentCache.set(id, updated.data);
+    changedNames.push(att.name);
+    if (isImageMime(att.mime_type)) touchedImage = true;
+  }
+  if (changedNames.length) {
+    markDirty();
+    // Reflect the new bytes in the live UI immediately (not only after reopen):
+    // refresh inline images in the editor and the attachments panel's metadata.
+    if (touchedImage) hydrateEditorImages(getActiveEntry()?.attachments);
+    renderAttachments();
+    showStatus(`Updated attachment: ${changedNames.join(", ")}`, 3000);
+  }
+  if (tooLargeNames.length) {
+    showStatus(
+      `⚠ Changes NOT saved — over the 25 MB limit: ${tooLargeNames.join(", ")}`,
+      8000,
+    );
+  }
+}
+
+// Sync external attachment edits the moment the user returns to Lockbook (e.g.
+// after saving in MuseScore and Alt-Tabbing back), so changes appear live rather
+// than only on the next save/reopen.
+function bindExternalAttachmentSync() {
+  const trigger = () => {
+    if (currentJournal && externalAttachmentEdits.size > 0) syncExternalAttachmentEdits();
+  };
+  window.addEventListener("focus", trigger);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") trigger();
+  });
 }
 
 function removeAttachment(id) {
@@ -2107,28 +2205,6 @@ async function doAutoSave() {
     errorPrefix: "⚠ Auto-save failed: ",
     skipIfClean: true,
   });
-  if (!currentJournal || !currentFilePath || !currentPassword) return;
-
-  // Sync active entry from editor
-  syncActiveEntry();
-  currentJournal.metadata.modified = new Date().toISOString();
-
-  // Ensure all required fields exist
-  normalizeJournalData();
-
-  try {
-    await window.__TAURI__.invoke("save_journal", {
-      path: currentFilePath,
-      password: currentPassword,
-      keyfile: currentKeyfile || null,
-      data: JSON.parse(JSON.stringify(currentJournal)),
-    });
-    clearDirty();
-    showStatus("Auto-saved ✓", 2000);
-  } catch (err) {
-    console.error("Auto-save failed:", err);
-    showStatus("⚠ Auto-save failed", 5000);
-  }
 }
 
 // ── Auto-Lock ──
@@ -2165,15 +2241,18 @@ function bindAutoLockActivity() {
 async function lockJournal() {
   if (!currentJournal || !currentFilePath || !currentPassword) return;
 
-  if (isDirty) {
-    const saved = await persistJournal({
-      errorPrefix: "⚠ Auto-lock: Speichern fehlgeschlagen, Journal bleibt entsperrt: ",
-    });
-    if (!saved) {
-      resetAutoLockTimer();
-      return;
-    }
+  // skipIfClean lets persistJournal first sync external attachment edits (which
+  // may mark the journal dirty) and only then decide whether a save is needed.
+  const saved = await persistJournal({
+    skipIfClean: true,
+    errorPrefix: "⚠ Auto-lock: save failed, journal stays unlocked: ",
+  });
+  if (!saved) {
+    resetAutoLockTimer();
+    return;
   }
+
+  externalAttachmentEdits.clear();
 
   clearTimeout(autoSaveTimer);
   if (window._autoSaveInterval) {
@@ -2292,6 +2371,11 @@ async function persistJournal({
   skipIfClean = false,
 } = {}) {
   if (!currentJournal || !currentFilePath || !currentPassword) return false;
+
+  // Pull in any edits made to attachments opened in an external editor; this may
+  // mark the journal dirty, so it must run before the clean check below.
+  await syncExternalAttachmentEdits();
+
   if (skipIfClean && !isDirty) return true;
 
   if (savePromise) {
@@ -2311,6 +2395,11 @@ async function persistJournal({
 
   const revisionAtStart = dirtyRevision;
 
+  // Encrypting the container runs Argon2, so a save takes a beat — surface a
+  // brief "Saving…" like the unlock spinner so it never looks frozen. The
+  // success or error message below replaces it.
+  showStatus("Saving…", 0);
+
   savePromise = (async () => {
     try {
       await window.__TAURI__.invoke("save_journal", {
@@ -2322,7 +2411,7 @@ async function persistJournal({
 
       if (dirtyRevision === revisionAtStart) {
         clearDirty();
-        if (successMessage) showStatus(successMessage, successDuration);
+        showStatus(successMessage || "Saved ✓", successDuration);
       }
 
       return true;
@@ -2342,40 +2431,22 @@ async function persistJournal({
 // ── Save ──
 async function saveJournal() {
   return persistJournal({
-    successMessage: "Gespeichert ✓",
+    successMessage: "Saved ✓",
     successDuration: 3000,
-    errorPrefix: "⚠ Speichern fehlgeschlagen: ",
+    errorPrefix: "⚠ Save failed: ",
   });
-  if (!currentJournal || !currentFilePath || !currentPassword) return;
-
-  syncActiveEntry();
-  currentJournal.metadata.modified = new Date().toISOString();
-
-  // Ensure all required fields exist
-  normalizeJournalData();
-
-  try {
-    await window.__TAURI__.invoke("save_journal", {
-      path: currentFilePath,
-      password: currentPassword,
-      keyfile: currentKeyfile || null,
-      data: JSON.parse(JSON.stringify(currentJournal)),
-    });
-    clearDirty();
-    showStatus("Gespeichert ✓", 3000);
-  } catch (err) {
-    showStatus("⚠ Speichern fehlgeschlagen: " + err, 5000);
-  }
 }
 
 // ── Close ──
 async function closeJournal() {
-  if (isDirty) {
-    const saved = await persistJournal({
-      errorPrefix: "⚠ Vor dem Schließen konnte nicht gespeichert werden: ",
-    });
-    if (!saved) return;
-  }
+  // skipIfClean lets persistJournal first sync external attachment edits (which
+  // may mark the journal dirty) and only then decide whether a save is needed.
+  const saved = await persistJournal({
+    skipIfClean: true,
+    errorPrefix: "⚠ Could not save before closing: ",
+  });
+  if (!saved) return;
+  externalAttachmentEdits.clear();
 
   clearTimeout(autoSaveTimer);
   if (window._autoSaveInterval) {
@@ -2399,17 +2470,6 @@ async function closeJournal() {
   isDirty = false;
   attachmentCache.clear(); // closed → drop decrypted blob bytes from memory
   updateTitleSurfaces();
-  showEmptyState();
-  showScreen("welcome-screen");
-  renderRecentJournals();
-  return;
-  if (isDirty) await doAutoSave();
-  currentJournal = null;
-  currentFilePath = null;
-  currentPassword = null;
-  currentKeyfile = null;
-  activeEntryId = null;
-  isDirty = false;
   showEmptyState();
   showScreen("welcome-screen");
   renderRecentJournals();
