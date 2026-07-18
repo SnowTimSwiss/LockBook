@@ -2741,6 +2741,12 @@ function setupKeyboardShortcuts() {
       toggleShortcutsModal();
     }
 
+    // Ctrl+L → Lock now (same as auto-lock, just manual)
+    if ((e.ctrlKey || e.metaKey) && e.key === "l") {
+      e.preventDefault();
+      if (currentJournal) lockJournal();
+    }
+
     // Escape → close modals
     if (e.key === "Escape") {
       $id("emoji-modal")?.classList.add("hidden");
