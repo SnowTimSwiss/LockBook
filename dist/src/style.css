@@ -456,6 +456,52 @@ html.resizing-attachments * {
   border-radius:var(--radius-sm); color:var(--text-muted); font-size:12px;
 }
 
+/* Music-mode tablature block — a structured, click-to-edit grid */
+.music-tab {
+  background:var(--bg-raised); border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:8px 10px; margin:10px 0;
+  user-select:none; outline:none; -webkit-user-select:none;
+}
+.music-tab:focus, .music-tab:focus-within { border-color:var(--accent); }
+.mt-head { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.mt-head .mt-spacer { flex:1; }
+.mt-select, .mt-btn {
+  background:transparent; color:var(--text-secondary);
+  border:1px solid var(--border); border-radius:4px; cursor:pointer;
+}
+.mt-select { font-size:12px; padding:2px 6px; }
+.mt-btn { width:24px; height:24px; padding:0; line-height:1; font-size:14px; }
+.mt-select:hover, .mt-btn:hover { background:var(--bg-hover); color:var(--text-primary); }
+
+/* Staves stack vertically: a too-wide tab wraps onto the next line, never scrolls */
+.mt-body { display:flex; flex-direction:column; gap:14px; }
+.mt-stave {
+  display:grid; align-items:center; grid-auto-rows:24px; width:max-content;
+  font-family:var(--font-mono); font-size:13px;
+  border-right:1px solid var(--text-muted); /* closing bar line */
+}
+.mt-label { padding-right:8px; text-align:right; color:var(--text-secondary); }
+.mt-cell {
+  position:relative; height:24px; display:flex; align-items:center;
+  justify-content:center; cursor:pointer;
+}
+/* String line — drawn as an overlay so bar lines never break it */
+.mt-cell::before {
+  content:""; position:absolute; left:0; right:0; top:50%;
+  height:1px; background:var(--border);
+}
+/* Bar line at each bar's first beat; 1px overlay, so it adds no layout width */
+.mt-cell.mt-barstart::after {
+  content:""; position:absolute; left:0; top:0; bottom:0;
+  width:1px; background:var(--text-muted);
+}
+.mt-cell:hover { background:rgba(91,141,238,.08); }
+.mt-cell.sel { outline:1.5px solid var(--accent); outline-offset:-1px; border-radius:3px; }
+.mt-fret {
+  position:relative; z-index:1; padding:0 3px; border-radius:3px;
+  background:var(--bg-raised); color:var(--text-primary);
+}
+
 /* Inline image whose encrypted bytes haven't been loaded yet (or failed to
    load). The <img> is kept so the attachment survives a save; this renders a
    neutral placeholder box instead of a broken-image icon. */

@@ -11,13 +11,13 @@ use crate::journal::{
     JournalData,
 };
 
-/// The currently open journal held in memory: its path, a working copy of the
-/// journal data (attachment bytes stripped for v2 containers), and — for v2
-/// containers — a keyed session that decrypts attachment blobs on demand without
-/// re-deriving the Argon2 master key. Dropping it (e.g. on `close_journal`)
-/// zeroizes the session's master key.
+/// The currently open journal held in memory: a working copy of the journal data
+/// (attachment bytes stripped for v2 containers) and — for v2 containers — a keyed
+/// session that decrypts attachment blobs on demand without re-deriving the Argon2
+/// master key. Dropping it (e.g. on `close_journal`) zeroizes the session's master
+/// key. The file path is not kept here: every command that touches disk receives it
+/// from the frontend.
 pub struct OpenJournal {
-    pub path: String,
     pub data: JournalData,
     pub session: Option<ContainerSession>,
 }
@@ -101,7 +101,6 @@ pub async fn create_journal(
 
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
-        path: path.clone(),
         data: data.clone(),
         session: Some(session),
     });
@@ -126,7 +125,6 @@ pub async fn open_journal(
 
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
-        path: path.clone(),
         data: data.clone(),
         session,
     });
@@ -166,7 +164,6 @@ pub async fn save_journal(
     strip_attachment_data(&mut data);
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
-        path: path.clone(),
         data,
         session: Some(session),
     });
@@ -289,7 +286,6 @@ pub async fn change_journal_password(
     strip_attachment_data(&mut data);
     let mut guard = state.0.lock().unwrap();
     *guard = Some(OpenJournal {
-        path: path.clone(),
         data,
         session: Some(session),
     });
@@ -557,7 +553,7 @@ pub async fn write_temp_attachment(name: String, data_base64: String) -> Result<
             .prefix("lockbook-attachment-")
             .tempdir()
             .map_err(JournalError::Io)?;
-        let dir_path = dir.into_path();
+        let dir_path = dir.keep();
 
         let file_path = dir_path.join(sanitize_file_name(&name));
         std::fs::write(&file_path, &bytes).map_err(JournalError::Io)?;

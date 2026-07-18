@@ -483,10 +483,13 @@ async function openRecentJournal(path) {
 // ═══════════════════════════════════════════════════════════════
 
 // "journal" enables diary features (date-as-title, mood); "general" is plain
-// notes. Used both for the active journal and for the mode picker shared by
-// the create screen and settings modal.
+// notes; "music" is plain notes plus tablature blocks. Used both for the active
+// journal and for the mode picker shared by the create screen and settings modal.
+const JOURNAL_MODES = ["journal", "general", "music"];
+
 function getJournalMode() {
-  return currentJournal?.metadata?.mode === "general" ? "general" : "journal";
+  const m = currentJournal?.metadata?.mode;
+  return JOURNAL_MODES.includes(m) ? m : "journal";
 }
 
 function setModeToggleValue(containerId, mode) {
@@ -496,9 +499,8 @@ function setModeToggleValue(containerId, mode) {
 }
 
 function getModeToggleValue(containerId) {
-  return document.querySelector(`#${containerId} .mode-toggle-btn.active`)?.dataset.mode === "general"
-    ? "general"
-    : "journal";
+  const m = document.querySelector(`#${containerId} .mode-toggle-btn.active`)?.dataset.mode;
+  return JOURNAL_MODES.includes(m) ? m : "journal";
 }
 
 function bindModeToggle(containerId) {
@@ -507,14 +509,21 @@ function bindModeToggle(containerId) {
   });
 }
 
-// Shows/hides the mood picker and date-as-title button per the active
-// journal's mode — both are diary-only features.
+// Shows/hides mode-specific controls per the active journal's mode: the mood
+// picker and date-as-title button are diary-only; the insert-tablature button
+// is music-only.
 function applyModeUi() {
-  const isGeneral = getJournalMode() === "general";
+  const mode = getJournalMode();
+  const isJournal = mode === "journal";
   const mood = $id("mood-select");
   const dateBtn = $id("btn-date-title");
-  if (mood) mood.style.display = isGeneral ? "none" : "";
-  if (dateBtn) dateBtn.style.display = isGeneral ? "none" : "";
+  const tabBtn = $id("btn-insert-tab");
+  const tabSep = $id("fmt-sep-tab");
+  if (mood) mood.style.display = isJournal ? "" : "none";
+  if (dateBtn) dateBtn.style.display = isJournal ? "" : "none";
+  const showTab = mode === "music" ? "" : "none";
+  if (tabBtn) tabBtn.style.display = showTab;
+  if (tabSep) tabSep.style.display = showTab;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1461,6 +1470,328 @@ function insertInlineImage(attachment, displayWidth) {
   updateEditorEmptyState();
 }
 
+// ── Tablature editor (music mode) ────────────────────────────────────────────
+// A structured, non-editable grid living inside the WYSIWYG editor. Its state is
+// a tuning + a list of columns (one fret per string, "" = empty), stored compactly
+// in `data-tab` as `label,label,…;col;col;…`. The grid is rendered by JS; only the
+// data attributes persist (see the sanitizer). Cells are edited by click + typing,
+// so a fret never shifts its neighbours.
+
+const TAB_TUNINGS = {
+  guitar: ["e", "B", "G", "D", "A", "E"], // high-e (top) → low-E (bottom)
+  bass: ["G", "D", "A", "E"],
+};
+// Columns are stored flat; bars are purely a view grouping (every BEATS_PER_BAR
+// columns), so the stored format stays unchanged. +/− add/remove a whole bar.
+const TAB_BEATS_PER_BAR = 8;
+const TAB_DEFAULT_COLS = TAB_BEATS_PER_BAR * 2;
+const TAB_CELL_W = 20; // px per beat cell — must match the inline grid template
+const TAB_LABEL_W = 26; // px reserved for the string-label column when measuring
+
+function makeDefaultTabModel(tuning, nCols = TAB_DEFAULT_COLS) {
+  const cols = [];
+  for (let c = 0; c < nCols; c++) cols.push(tuning.map(() => ""));
+  return { tuning: tuning.slice(), cols };
+}
+
+// Parse `data-tab` back into a model. Returns null on anything malformed so the
+// caller can fall back to a fresh default rather than render garbage.
+function parseTab(data) {
+  if (typeof data !== "string" || !data) return null;
+  const segs = data.split(";");
+  const tuning = segs[0].split(",").filter((s) => /^[A-Za-z]$/.test(s));
+  if (!tuning.length) return null;
+  const cols = segs.slice(1).map((s) => {
+    const arr = s.split(",");
+    return tuning.map((_, i) => (/^\d{1,2}$/.test(arr[i]) ? arr[i] : ""));
+  });
+  return { tuning, cols: cols.length ? cols : makeDefaultTabModel(tuning).cols };
+}
+
+function serializeTab(model) {
+  return [model.tuning.join(","), ...model.cols.map((col) => col.join(","))].join(";");
+}
+
+// Plain-text tab for Markdown export: each column is two chars wide so it stays
+// aligned (e.g. "-3", "12", "--").
+function tabToAscii(model) {
+  if (!model) return "";
+  return model.tuning
+    .map((label, r) => {
+      let line = label + "|";
+      for (const col of model.cols) {
+        const f = col[r] || "";
+        line += f.length === 2 ? f : f.length === 1 ? f + "-" : "--";
+      }
+      return line + "|";
+    })
+    .join("\n");
+}
+
+// Drops a fresh tablature block at the caret, followed by an empty paragraph so
+// the caret has somewhere to land after the (non-editable) block.
+function insertTabBlock() {
+  const block = document.createElement("div");
+  block.setAttribute("data-music", "tab");
+  block.setAttribute("data-tab", serializeTab(makeDefaultTabModel(TAB_TUNINGS.guitar)));
+  insertNodeAtCursor(block);
+  renderTabBlock(block);
+
+  const after = document.createElement("p");
+  after.appendChild(document.createElement("br"));
+  block.after(after);
+
+  const sel = window.getSelection();
+  if (sel) {
+    const range = document.createRange();
+    range.setStart(after, 0);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  markDirty();
+  updateEditorEmptyState();
+}
+
+// Re-render every tab block from its data-tab (called on entry load).
+function hydrateTabBlocks() {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  editor.querySelectorAll('[data-music="tab"]').forEach(renderTabBlock);
+}
+
+// Build (or rebuild) the interactive grid for one block from its data-tab.
+function renderTabBlock(block) {
+  const model = parseTab(block.getAttribute("data-tab")) || makeDefaultTabModel(TAB_TUNINGS.guitar);
+  block.setAttribute("data-tab", serializeTab(model)); // normalize
+  block.classList.add("music-tab");
+  block.setAttribute("contenteditable", "false");
+  block.tabIndex = 0;
+  block.innerHTML = "";
+
+  // Keep the selection across a rerender, but only if it still exists (changing
+  // instrument shrinks the string count).
+  const prev = block.__tab?.sel || null;
+  const prevSel =
+    prev && prev.r < model.tuning.length && prev.c < model.cols.length ? prev : null;
+  const st = { model, sel: prevSel, cellAt: [], twoDigit: false, lastWidth: 0 };
+  block.__tab = st;
+
+  // ── Header: instrument, add/remove column, delete block ──
+  const head = document.createElement("div");
+  head.className = "mt-head";
+
+  const select = document.createElement("select");
+  select.className = "mt-select";
+  for (const [key, tuning] of Object.entries(TAB_TUNINGS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = key[0].toUpperCase() + key.slice(1);
+    if (tuning.join(",") === model.tuning.join(",")) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => {
+    const tuning = TAB_TUNINGS[select.value] || TAB_TUNINGS.guitar;
+    block.setAttribute("data-tab", serializeTab(makeDefaultTabModel(tuning, model.cols.length)));
+    markDirty();
+    renderTabBlock(block);
+  });
+
+  const spacer = document.createElement("span");
+  spacer.className = "mt-spacer";
+
+  const remBtn = mtButton("−", "Remove last bar", () => {
+    if (st.model.cols.length > TAB_BEATS_PER_BAR) {
+      st.model.cols.splice(-TAB_BEATS_PER_BAR);
+      if (st.sel && st.sel.c >= st.model.cols.length) st.sel = null;
+      block.setAttribute("data-tab", serializeTab(st.model));
+      markDirty();
+      layoutTab(block);
+    }
+  });
+  const addBtn = mtButton("+", "Add bar", () => {
+    for (let i = 0; i < TAB_BEATS_PER_BAR; i++) {
+      st.model.cols.push(st.model.tuning.map(() => ""));
+    }
+    block.setAttribute("data-tab", serializeTab(st.model));
+    markDirty();
+    layoutTab(block);
+  });
+  const delBtn = mtButton("✕", "Delete tablature", () => {
+    block.remove();
+    markDirty();
+    updateEditorEmptyState();
+  });
+  delBtn.classList.add("mt-del");
+
+  head.append(select, spacer, remBtn, addBtn, delBtn);
+  block.appendChild(head);
+
+  // The staves are (re)built by layoutTab, which depends on the available width.
+  const body = document.createElement("div");
+  body.className = "mt-body";
+  block.appendChild(body);
+  layoutTab(block);
+
+  // The block element survives rerenders, so bind these only once.
+  if (!block.__tabKeydownBound) {
+    block.addEventListener("keydown", onTabKeydown);
+    block.__tabKeydownBound = true;
+  }
+  if (!block.__tabResizeBound && typeof ResizeObserver === "function") {
+    // Reflow when the editor gets wider/narrower. Only width matters — our own
+    // relayout changes the height, so reacting to that would loop.
+    const ro = new ResizeObserver(() => {
+      const st2 = block.__tab;
+      const w = block.clientWidth;
+      if (!st2 || w === st2.lastWidth) return;
+      layoutTab(block);
+    });
+    ro.observe(block);
+    block.__tabResizeBound = true;
+  }
+}
+
+// Lay the columns out as one or more staves ("systems"): as many whole bars as
+// fit the current width, then wrap onto the next stave instead of scrolling.
+function layoutTab(block) {
+  const st = block.__tab;
+  if (!st) return;
+  const { model } = st;
+  const body = block.querySelector(".mt-body");
+  if (!body) return;
+
+  st.lastWidth = block.clientWidth;
+  body.innerHTML = "";
+  st.cellAt = model.tuning.map(() => []);
+
+  const barW = TAB_BEATS_PER_BAR * TAB_CELL_W;
+  const avail = Math.max(0, (body.clientWidth || block.clientWidth) - TAB_LABEL_W - 4);
+  const barsPerRow = Math.max(1, Math.floor(avail / barW));
+  const colsPerRow = barsPerRow * TAB_BEATS_PER_BAR;
+  const total = model.cols.length;
+
+  for (let start = 0; start < total; start += colsPerRow) {
+    const count = Math.min(colsPerRow, total - start);
+    const stave = document.createElement("div");
+    stave.className = "mt-stave";
+    stave.style.gridTemplateColumns = `${TAB_LABEL_W}px repeat(${count}, ${TAB_CELL_W}px)`;
+
+    for (let r = 0; r < model.tuning.length; r++) {
+      const label = document.createElement("div");
+      label.className = "mt-label";
+      label.textContent = model.tuning[r];
+      stave.appendChild(label);
+
+      for (let i = 0; i < count; i++) {
+        const c = start + i;
+        const cell = document.createElement("div");
+        cell.className = "mt-cell";
+        // Bar lines: one before each bar's first beat, one closing the stave.
+        if (c % TAB_BEATS_PER_BAR === 0) cell.classList.add("mt-barstart");
+        const val = model.cols[c][r];
+        if (val) {
+          const s = document.createElement("span");
+          s.className = "mt-fret";
+          s.textContent = val;
+          cell.appendChild(s);
+        }
+        cell.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          block.focus();
+          selectTabCell(block, r, c);
+        });
+        stave.appendChild(cell);
+        st.cellAt[r][c] = cell;
+      }
+    }
+    body.appendChild(stave);
+  }
+
+  // Restore the highlight after a reflow.
+  if (st.sel) st.cellAt[st.sel.r]?.[st.sel.c]?.classList.add("sel");
+}
+
+function mtButton(label, title, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mt-btn";
+  b.textContent = label;
+  b.title = title;
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function selectTabCell(block, r, c) {
+  const st = block.__tab;
+  if (!st) return;
+  if (st.sel) st.cellAt[st.sel.r]?.[st.sel.c]?.classList.remove("sel");
+  st.sel = { r, c };
+  st.twoDigit = false;
+  st.cellAt[r]?.[c]?.classList.add("sel");
+}
+
+function setTabCell(block, r, c, val) {
+  const st = block.__tab;
+  st.model.cols[c][r] = val;
+  const cell = st.cellAt[r]?.[c];
+  if (cell) {
+    cell.innerHTML = "";
+    if (val) {
+      const s = document.createElement("span");
+      s.className = "mt-fret";
+      s.textContent = val;
+      cell.appendChild(s);
+    }
+  }
+  block.setAttribute("data-tab", serializeTab(st.model));
+  markDirty();
+}
+
+function onTabKeydown(e) {
+  const block = e.currentTarget;
+  const st = block.__tab;
+  if (!st) return;
+  if (!st.sel) {
+    if (e.key.startsWith("Arrow")) {
+      selectTabCell(block, 0, 0);
+      e.preventDefault();
+    }
+    return;
+  }
+  const { r, c } = st.sel;
+  const lastCol = st.model.cols.length - 1;
+  const lastRow = st.model.tuning.length - 1;
+
+  if (/^[0-9]$/.test(e.key)) {
+    const cur = st.model.cols[c][r] || "";
+    let val;
+    if (st.twoDigit && cur.length === 1 && Number(cur + e.key) <= 24) {
+      val = cur + e.key;
+      st.twoDigit = false;
+    } else {
+      val = e.key;
+      st.twoDigit = true;
+    }
+    setTabCell(block, r, c, val);
+    e.preventDefault();
+    return;
+  }
+  switch (e.key) {
+    case "Backspace":
+    case "Delete":
+      setTabCell(block, r, c, "");
+      st.twoDigit = false;
+      e.preventDefault();
+      break;
+    case "ArrowRight": selectTabCell(block, r, Math.min(c + 1, lastCol)); e.preventDefault(); break;
+    case "ArrowLeft":  selectTabCell(block, r, Math.max(c - 1, 0)); e.preventDefault(); break;
+    case "ArrowUp":    selectTabCell(block, Math.max(r - 1, 0), c); e.preventDefault(); break;
+    case "ArrowDown":  selectTabCell(block, Math.min(r + 1, lastRow), c); e.preventDefault(); break;
+  }
+}
+
 function renderAttachments() {
   const panel = $id("attachments-panel");
   const resizer = $id("attachments-resizer");
@@ -1711,6 +2042,17 @@ const SANITIZE_TAGS = new Set([
   "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "a", "img",
 ]);
 
+// A music tablature block persists as an empty `<div data-music="tab" data-tab="…">`.
+// The interactive grid is rendered by JS on load and stripped on save, so only the
+// two data-* attributes survive sanitization (see sanitizeNode / sanitizeAttributes).
+function isTabBlock(node) {
+  return (
+    node.nodeType === Node.ELEMENT_NODE &&
+    node.tagName.toLowerCase() === "div" &&
+    node.getAttribute("data-music") === "tab"
+  );
+}
+
 // Only http(s)/mailto and scheme-less (relative / anchor) URLs are allowed —
 // this rejects `javascript:` and other script-bearing schemes.
 function isSafeUrl(url) {
@@ -1746,6 +2088,12 @@ function sanitizeNode(parent) {
       node.remove();
       continue;
     }
+    // Music blocks store their state in data-tab; the rendered grid is disposable.
+    // Drop the children so only the empty, attribute-bearing <div> is persisted.
+    if (isTabBlock(node)) {
+      node.textContent = "";
+      continue;
+    }
     sanitizeNode(node);
   }
 }
@@ -1756,6 +2104,8 @@ function sanitizeAttributes(el, tag) {
     const name = attr.name.toLowerCase();
     if (tag === "a" && name === "href" && isSafeUrl(attr.value)) continue;
     if (tag === "img" && name === "data-att-id" && /^[\w-]+$/.test(attr.value)) continue;
+    if (tag === "div" && name === "data-music" && /^[\w-]+$/.test(attr.value)) continue;
+    if (tag === "div" && name === "data-tab" && /^[A-Za-z0-9,;]*$/.test(attr.value)) continue;
     el.removeAttribute(attr.name);
   }
   if (tag === "img" && keepWidth && /^\d+(\.\d+)?px$/.test(keepWidth)) {
@@ -1790,6 +2140,10 @@ function serializeMdNode(node, imgRelPaths) {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent;
   if (node.nodeType !== Node.ELEMENT_NODE) return "";
   const tag = node.tagName.toLowerCase();
+  if (isTabBlock(node)) {
+    const ascii = tabToAscii(parseTab(node.getAttribute("data-tab")));
+    return ascii ? "```\n" + ascii + "\n```\n\n" : "";
+  }
   const inner = () => serializeMdChildren(node, imgRelPaths);
   switch (tag) {
     case "br": return "\n";
@@ -1832,6 +2186,7 @@ function setEditorContent(html, attachments) {
   deselectImage();
   editor.innerHTML = sanitizeHtml(html || "");
   hydrateEditorImages(attachments);
+  hydrateTabBlocks();
   updateEditorEmptyState();
 }
 
@@ -1907,7 +2262,7 @@ function getEditorHtml() {
   const editor = $id("content-editor");
   if (!editor) return "";
   const html = sanitizeHtml(editor.innerHTML);
-  if (/<img\b/i.test(html)) return html;
+  if (/<img\b/i.test(html) || /data-music=/i.test(html)) return html;
   return htmlToPlainText(html).replace(/ /g, "").trim() ? html : "";
 }
 
@@ -1915,7 +2270,7 @@ function updateEditorEmptyState() {
   const editor = $id("content-editor");
   if (!editor) return;
   const empty =
-    !editor.querySelector("img") &&
+    !editor.querySelector("img, [data-music]") &&
     (editor.textContent || "").replace(/ /g, "").trim() === "";
   editor.classList.toggle("is-empty", empty);
 }
@@ -2015,6 +2370,7 @@ function applyFormatCommand(cmd) {
     case "ol": document.execCommand("insertOrderedList"); break;
     case "quote": toggleBlockFormat("blockquote"); break;
     case "link": insertLink(); break;
+    case "tab": insertTabBlock(); break;
   }
 
   markDirty();
@@ -2350,7 +2706,7 @@ function normalizeJournalData() {
   if (!currentJournal.metadata.modified) currentJournal.metadata.modified = nowIso;
   if (!currentJournal.metadata.app) currentJournal.metadata.app = "Lockbook";
   if (!currentJournal.metadata.version) currentJournal.metadata.version = "1.2.1";
-  if (currentJournal.metadata.mode !== "journal" && currentJournal.metadata.mode !== "general") {
+  if (!JOURNAL_MODES.includes(currentJournal.metadata.mode)) {
     currentJournal.metadata.mode = "journal";
   }
   if (!currentJournal.version) currentJournal.version = "1.0";

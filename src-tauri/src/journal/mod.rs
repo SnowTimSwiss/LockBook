@@ -8,13 +8,15 @@ pub use entry::JournalEntry;
 use crate::error::{JournalError, Result};
 
 /// How a journal presents itself. `Journal` enables diary features (date-as-title,
-/// mood/emotions); `General` is a plain notes mode. v1.3.0 files have no mode and
-/// default to `Journal`, matching their existing behavior.
+/// mood/emotions); `General` is a plain notes mode; `Music` is a notes mode with
+/// tablature blocks. v1.3.0 files have no mode and default to `Journal`, matching
+/// their existing behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum JournalMode {
     Journal,
     General,
+    Music,
 }
 
 impl Default for JournalMode {

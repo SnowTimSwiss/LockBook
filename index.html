@@ -83,6 +83,7 @@
       <div class="mode-toggle" id="create-mode-toggle">
         <button type="button" class="mode-toggle-btn active" data-mode="journal">📔 Journal</button>
         <button type="button" class="mode-toggle-btn" data-mode="general">📝 General notes</button>
+        <button type="button" class="mode-toggle-btn" data-mode="music">🎵 Music</button>
       </div>
     </div>
 
@@ -247,6 +248,8 @@
           <button class="fmt-btn" data-cmd="quote" title="Quote"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/><path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"/></svg>Quote</button>
           <span class="fmt-sep"></span>
           <button class="fmt-btn" data-cmd="link" title="Insert link"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Link</button>
+          <span class="fmt-sep" id="fmt-sep-tab" style="display:none"></span>
+          <button class="fmt-btn" id="btn-insert-tab" data-cmd="tab" title="Insert guitar/bass tablature" style="display:none">🎸&nbsp;Tab</button>
         </div>
 
         <!-- Content (rich text) -->
@@ -315,6 +318,7 @@
         <div class="mode-toggle" id="settings-mode-toggle">
           <button type="button" class="mode-toggle-btn" data-mode="journal">📔 Journal</button>
           <button type="button" class="mode-toggle-btn" data-mode="general">📝 General notes</button>
+          <button type="button" class="mode-toggle-btn" data-mode="music">🎵 Music</button>
         </div>
       </div>
     </div>
