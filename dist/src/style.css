@@ -472,6 +472,7 @@ html.resizing-attachments * {
 .mt-select { font-size:12px; padding:2px 6px; }
 .mt-btn { width:24px; height:24px; padding:0; line-height:1; font-size:14px; }
 .mt-select:hover, .mt-btn:hover { background:var(--bg-hover); color:var(--text-primary); }
+.mt-btn.mt-active { background:var(--accent); border-color:var(--accent); color:#fff; }
 
 /* Staves stack vertically: a too-wide tab wraps onto the next line, never scrolls */
 .mt-body { display:flex; flex-direction:column; gap:14px; }
@@ -501,6 +502,35 @@ html.resizing-attachments * {
   position:relative; z-index:1; padding:0 3px; border-radius:3px;
   background:var(--bg-raised); color:var(--text-primary);
 }
+
+/* Music-mode staff-notation block — SVG staff systems + a virtual keyboard.
+   Shares .mt-select/.mt-btn/.mt-spacer/.mt-del with the tab block's header. */
+.music-staff {
+  background:var(--bg-raised); border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:8px 10px; margin:10px 0;
+  user-select:none; outline:none; -webkit-user-select:none;
+}
+.music-staff:focus, .music-staff:focus-within { border-color:var(--accent); }
+.ms-head { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.ms-head .mt-spacer { flex:1; }
+.ms-body { display:flex; flex-direction:column; gap:10px; overflow-x:auto; }
+.ms-system { display:block; }
+.ms-slot { cursor:pointer; }
+.ms-slot:hover { opacity:.75; }
+.ms-slot.sel { outline:1.5px solid var(--accent); outline-offset:1px; }
+
+.ms-keys {
+  display:flex; gap:1px; margin-top:10px; overflow-x:auto; padding-bottom:2px;
+}
+.ms-keys[hidden] { display:none; }
+.ms-key {
+  flex:0 0 auto; width:16px; height:44px; border:1px solid var(--border);
+  border-radius:0 0 3px 3px; background:var(--bg-raised); cursor:pointer;
+}
+.ms-key:hover { background:var(--bg-hover); }
+.ms-key.black { background:var(--text-secondary); height:28px; }
+.ms-key.black:hover { background:var(--text-primary); }
+.ms-key.active { background:var(--accent); border-color:var(--accent); }
 
 /* Inline image whose encrypted bytes haven't been loaded yet (or failed to
    load). The <img> is kept so the attachment survives a save; this renders a

@@ -519,11 +519,13 @@ function applyModeUi() {
   const dateBtn = $id("btn-date-title");
   const tabBtn = $id("btn-insert-tab");
   const tabSep = $id("fmt-sep-tab");
+  const staffBtn = $id("btn-insert-staff");
   if (mood) mood.style.display = isJournal ? "" : "none";
   if (dateBtn) dateBtn.style.display = isJournal ? "" : "none";
   const showTab = mode === "music" ? "" : "none";
   if (tabBtn) tabBtn.style.display = showTab;
   if (tabSep) tabSep.style.display = showTab;
+  if (staffBtn) staffBtn.style.display = showTab;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1792,6 +1794,586 @@ function onTabKeydown(e) {
   }
 }
 
+// ── Staff-notation editor (music mode) ───────────────────────────────────────
+// A second, independent block type alongside the tablature block above: a
+// real 5-line staff with pitched noteheads, rendered as inline SVG (pitch
+// position is continuous, unlike the tab grid's discrete string×beat cells).
+// State is a clef + a flat sequence of time-slots, each a rest or 1+
+// simultaneous pitches (a chord shares one stem), stored compactly in
+// `data-staff` as `clef;slot;slot;…` where a slot is `<dur><rest-or-chord>`,
+// e.g. `t;qC4+E4+G4;eBb4;sr;hD#5`. Barlines are never stored — like the tab
+// editor's bar grouping, they're a pure view computed from accumulated
+// duration (fixed 4/4).
+
+const STAFF_CLEFS = {
+  t: { label: "Treble", bottomLetter: "E", bottomOctave: 4 },
+  b: { label: "Bass", bottomLetter: "G", bottomOctave: 2 },
+};
+const STAFF_DUR_BEATS = { w: 4, h: 2, q: 1, e: 0.5, s: 0.25 };
+const STAFF_BEATS_PER_BAR = 4;
+const STAFF_DEFAULT_SLOTS = STAFF_BEATS_PER_BAR * 2; // two bars of quarter rests
+const STAFF_SLOT_W = 40; // px per slot — must match the SVG layout math
+const STAFF_LINE_GAP = 10; // px between staff lines
+const STAFF_TOP_PAD = 24; // px above the top line, room for ledger lines
+const STAFF_BOTTOM_PAD = 24; // px below the bottom line
+const STAFF_CLEF_W = 46; // px reserved for the clef text badge ("Treble"/"Bass")
+const LETTER_STEP = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+const STEP_LETTER = ["C", "D", "E", "F", "G", "A", "B"];
+const CHROMATIC = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const STAFF_KB_OCTAVES = [2, 3, 4, 5]; // covers both clefs' practical ranges
+
+function makeDefaultStaffModel(clef = "t", nSlots = STAFF_DEFAULT_SLOTS) {
+  const slots = [];
+  for (let i = 0; i < nSlots; i++) slots.push({ dur: "q", pitches: [] });
+  return { clef, slots };
+}
+
+// Parse `data-staff` back into a model. Returns null on a bad clef (caller
+// falls back to a fresh default); an individual malformed slot is coerced to
+// a quarter rest rather than nulling the whole block.
+function parseStaff(data) {
+  if (typeof data !== "string" || !data) return null;
+  const segs = data.split(";");
+  const clef = segs[0];
+  if (clef !== "t" && clef !== "b") return null;
+  const slotRe = /^([whqes])(r|[A-G](?:#|b)?[0-8](?:\+[A-G](?:#|b)?[0-8])*)$/;
+  const slots = segs.slice(1).map((seg) => {
+    const m = slotRe.exec(seg);
+    if (!m) return { dur: "q", pitches: [] };
+    return { dur: m[1], pitches: m[2] === "r" ? [] : m[2].split("+") };
+  });
+  return { clef, slots: slots.length ? slots : makeDefaultStaffModel(clef).slots };
+}
+
+function serializeStaff(model) {
+  return [
+    model.clef,
+    ...model.slots.map((s) => s.dur + (s.pitches.length ? s.pitches.join("+") : "r")),
+  ].join(";");
+}
+
+// Plain-text listing for Markdown export — one line per slot. Unlike the tab
+// editor's aligned ASCII, staff art isn't attempted here; low value for the
+// effort at this fidelity level.
+function staffToText(model) {
+  if (!model) return "";
+  const durName = { w: "whole", h: "half", q: "quarter", e: "eighth", s: "sixteenth" };
+  const header = (STAFF_CLEFS[model.clef] || STAFF_CLEFS.t).label + " clef";
+  const lines = model.slots.map(
+    (s) => `${durName[s.dur] || s.dur}: ${s.pitches.length ? s.pitches.join(" + ") : "rest"}`
+  );
+  return [header, ...lines].join("\n");
+}
+
+// Drops a fresh staff block at the caret — mirrors insertTabBlock exactly.
+function insertStaffBlock() {
+  const block = document.createElement("div");
+  block.setAttribute("data-music", "staff");
+  block.setAttribute("data-staff", serializeStaff(makeDefaultStaffModel("t")));
+  insertNodeAtCursor(block);
+  renderStaffBlock(block);
+
+  const after = document.createElement("p");
+  after.appendChild(document.createElement("br"));
+  block.after(after);
+
+  const sel = window.getSelection();
+  if (sel) {
+    const range = document.createRange();
+    range.setStart(after, 0);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  markDirty();
+  updateEditorEmptyState();
+}
+
+// Re-render every staff block from its data-staff (called on entry load).
+function hydrateStaffBlocks() {
+  const editor = $id("content-editor");
+  if (!editor) return;
+  editor.querySelectorAll('[data-music="staff"]').forEach(renderStaffBlock);
+}
+
+// Build (or rebuild) one block's DOM from its data-staff: a header (clef
+// select, +/− bar, delete — reusing the tab editor's mtButton/mt-* chrome),
+// the SVG staff systems (layoutStaff), and a virtual piano keyboard.
+function renderStaffBlock(block) {
+  const model = parseStaff(block.getAttribute("data-staff")) || makeDefaultStaffModel("t");
+  block.setAttribute("data-staff", serializeStaff(model));
+  block.classList.add("music-staff");
+  block.setAttribute("contenteditable", "false");
+  block.tabIndex = 0;
+  block.innerHTML = "";
+
+  const prevSel = block.__staff?.sel;
+  const sel = Number.isInteger(prevSel) && prevSel < model.slots.length ? prevSel : null;
+  const kbOpen = block.__staff?.kbOpen || false;
+  const st = { model, sel, slotAt: [], keyEls: [], lastWidth: 0, durBuffer: "", kbOpen };
+  block.__staff = st;
+
+  const head = document.createElement("div");
+  head.className = "ms-head";
+
+  const clefSelect = document.createElement("select");
+  clefSelect.className = "mt-select";
+  for (const [key, def] of Object.entries(STAFF_CLEFS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = def.label;
+    if (key === model.clef) opt.selected = true;
+    clefSelect.appendChild(opt);
+  }
+  clefSelect.addEventListener("change", () => {
+    st.model.clef = clefSelect.value;
+    block.setAttribute("data-staff", serializeStaff(st.model));
+    markDirty();
+    layoutStaff(block);
+  });
+
+  const spacer = document.createElement("span");
+  spacer.className = "mt-spacer";
+
+  const remBtn = mtButton("−", "Remove last bar", () => {
+    if (st.model.slots.length > STAFF_BEATS_PER_BAR) {
+      st.model.slots.splice(-STAFF_BEATS_PER_BAR);
+      if (st.sel != null && st.sel >= st.model.slots.length) st.sel = null;
+      block.setAttribute("data-staff", serializeStaff(st.model));
+      markDirty();
+      layoutStaff(block);
+    }
+  });
+  const addBtn = mtButton("+", "Add bar", () => {
+    for (let i = 0; i < STAFF_BEATS_PER_BAR; i++) st.model.slots.push({ dur: "q", pitches: [] });
+    block.setAttribute("data-staff", serializeStaff(st.model));
+    markDirty();
+    layoutStaff(block);
+  });
+  const delBtn = mtButton("✕", "Delete staff", () => {
+    block.remove();
+    markDirty();
+    updateEditorEmptyState();
+  });
+  delBtn.classList.add("mt-del");
+
+  // Keyboard starts collapsed — it's only needed while actively entering
+  // notes, and otherwise just eats vertical space.
+  const kbToggle = mtButton("🎹", "Show/hide the on-screen keyboard", () => {
+    st.kbOpen = !st.kbOpen;
+    kbToggle.classList.toggle("mt-active", st.kbOpen);
+    const keys = block.querySelector(".ms-keys");
+    if (keys) keys.hidden = !st.kbOpen;
+  });
+  kbToggle.classList.toggle("mt-active", st.kbOpen);
+
+  head.append(clefSelect, spacer, kbToggle, remBtn, addBtn, delBtn);
+  block.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "ms-body";
+  block.appendChild(body);
+  layoutStaff(block);
+
+  bindStaffKeyboard(block);
+
+  if (!block.__staffKeydownBound) {
+    block.addEventListener("keydown", onStaffKeydown);
+    block.__staffKeydownBound = true;
+  }
+  if (!block.__staffResizeBound && typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver(() => {
+      const st2 = block.__staff;
+      const w = block.clientWidth;
+      if (!st2 || w === st2.lastWidth) return;
+      layoutStaff(block);
+    });
+    ro.observe(block);
+    block.__staffResizeBound = true;
+  }
+}
+
+function svgEl(tag, attrs, text) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+// A plain text badge rather than a drawn/Unicode clef symbol — verified via a
+// MiniBrowser test page (same WebKitGTK engine as the app) that neither a
+// hand-built SVG path nor the Unicode Musical Symbols glyphs (U+1D11E/1D122)
+// render legibly with the fonts available on a stock Linux desktop: the SVG
+// <text> case produced nothing at all, and even plain HTML text rendered the
+// glyph as an illegible sliver. A text label sidesteps both failure modes.
+function drawClefGlyph(clef, staffTop, staffBottom) {
+  const midY = (staffTop + staffBottom) / 2;
+  const label = clef === "b" ? "Bass" : "Treble";
+  return svgEl(
+    "text",
+    {
+      x: 2, y: midY + 4, "font-size": 11, "font-weight": "600",
+      fill: "var(--text-secondary)", "font-family": "sans-serif",
+    },
+    label
+  );
+}
+
+// step is a diatonic index (octave*7 + letter offset); inverse of
+// pitchDiatonicIndex, used both for click-to-pitch and Up/Down navigation.
+function stepToPitchStr(step) {
+  const octave = Math.floor(step / 7);
+  const letter = STEP_LETTER[((step % 7) + 7) % 7];
+  return letter + octave;
+}
+
+function parsePitch(p) {
+  const m = /^([A-G])(#|b)?(\d)$/.exec(p || "");
+  if (!m) return null;
+  return { letter: m[1], accidental: m[2] || "", octave: Number(m[3]) };
+}
+
+function pitchDiatonicIndex(pitch) {
+  return pitch.octave * 7 + LETTER_STEP[pitch.letter];
+}
+
+// Absolute semitone number (enharmonic-agnostic) — used to match a pitch
+// against the virtual keyboard regardless of sharp/flat spelling.
+function pitchSemitone(pitch) {
+  const base = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[pitch.letter];
+  const acc = pitch.accidental === "#" ? 1 : pitch.accidental === "b" ? -1 : 0;
+  return pitch.octave * 12 + base + acc;
+}
+
+// Vertical position for a clef: each diatonic step is half a line-gap: lines
+// sit at even step-offsets from the clef's bottom-line reference note, spaces
+// at odd offsets.
+function pitchToStaffY(pitchStr, clef, staffTop, staffBottom) {
+  const pitch = parsePitch(pitchStr);
+  if (!pitch) return (staffTop + staffBottom) / 2;
+  const def = STAFF_CLEFS[clef] || STAFF_CLEFS.t;
+  const refStep = def.bottomOctave * 7 + LETTER_STEP[def.bottomLetter];
+  const lineGap = (staffBottom - staffTop) / 4;
+  return staffBottom - (pitchDiatonicIndex(pitch) - refStep) * (lineGap / 2);
+}
+
+// Inverse of pitchToStaffY: nearest diatonic (natural) pitch for a click's Y.
+function pitchFromStaffY(y, clef, staffTop, staffBottom) {
+  const def = STAFF_CLEFS[clef] || STAFF_CLEFS.t;
+  const refStep = def.bottomOctave * 7 + LETTER_STEP[def.bottomLetter];
+  const lineGap = (staffBottom - staffTop) / 4;
+  const stepFloat = (staffBottom - y) / (lineGap / 2);
+  return stepToPitchStr(Math.round(stepFloat) + refStep);
+}
+
+function drawLedgerLines(g, y, cx, staffTop, staffBottom, lineGap) {
+  if (y < staffTop - 0.1) {
+    for (let ly = staffTop - lineGap; ly >= y - 0.1; ly -= lineGap) {
+      g.appendChild(svgEl("line", { x1: cx - 8, y1: ly, x2: cx + 8, y2: ly, stroke: "var(--text-muted)", "stroke-width": 1 }));
+    }
+  } else if (y > staffBottom + 0.1) {
+    for (let ly = staffBottom + lineGap; ly <= y + 0.1; ly += lineGap) {
+      g.appendChild(svgEl("line", { x1: cx - 8, y1: ly, x2: cx + 8, y2: ly, stroke: "var(--text-muted)", "stroke-width": 1 }));
+    }
+  }
+}
+
+// Draws one slot: a rest glyph, or notehead(s) + shared stem + flags (chords
+// stack noteheads on one stem). No automatic beam-grouping in v1 — eighth and
+// sixteenth notes each get their own flag(s) rather than being beamed.
+function drawStaffSlot(slot, clef, x, staffTop, staffBottom, slotW, lineGap, svgHeight) {
+  const g = svgEl("g", { class: "ms-slot" });
+  const cx = x + slotW / 2;
+  const midY = (staffTop + staffBottom) / 2;
+
+  // Invisible hit-area spanning the whole slot column (including above/below
+  // the staff, for ledger-line notes) — without this, only the tiny notehead
+  // itself (or nothing, for hollow whole/half notes with fill:none) is
+  // clickable, which makes note entry all but unusable.
+  g.appendChild(svgEl("rect", { x, y: 0, width: slotW, height: svgHeight, fill: "transparent" }));
+
+  if (!slot.pitches.length) {
+    if (slot.dur === "w") {
+      g.appendChild(svgEl("rect", { x: cx - 5, y: staffTop + lineGap - 3, width: 10, height: 4, fill: "var(--text-primary)" }));
+    } else if (slot.dur === "h") {
+      g.appendChild(svgEl("rect", { x: cx - 5, y: midY - 1, width: 10, height: 4, fill: "var(--text-primary)" }));
+    } else {
+      const extra = slot.dur === "s" ? " q 4,3 -2,5" : "";
+      g.appendChild(
+        svgEl("path", {
+          d: `M ${cx - 3},${midY - 10} q 6,4 0,8 q -6,4 0,8${extra}`,
+          fill: "none", stroke: "var(--text-primary)", "stroke-width": 1.6, "stroke-linecap": "round",
+        })
+      );
+    }
+    return g;
+  }
+
+  const hollow = slot.dur === "w" || slot.dur === "h";
+  const hasStem = slot.dur !== "w";
+  const flags = slot.dur === "e" ? 1 : slot.dur === "s" ? 2 : 0;
+  const ys = slot.pitches.map((p) => pitchToStaffY(p, clef, staffTop, staffBottom));
+
+  slot.pitches.forEach((pStr, idx) => {
+    const y = ys[idx];
+    drawLedgerLines(g, y, cx, staffTop, staffBottom, lineGap);
+    const pitch = parsePitch(pStr);
+    if (pitch && pitch.accidental) {
+      g.appendChild(
+        svgEl("text", { x: cx - 13, y: y + 3.5, "font-size": 11, fill: "var(--text-primary)" }, pitch.accidental === "#" ? "♯" : "♭")
+      );
+    }
+    g.appendChild(
+      svgEl("ellipse", {
+        cx, cy: y, rx: 5, ry: 3.5,
+        fill: hollow ? "none" : "var(--text-primary)",
+        stroke: "var(--text-primary)", "stroke-width": 1.3,
+      })
+    );
+  });
+
+  if (hasStem) {
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const farthest = ys.reduce((a, b) => (Math.abs(b - midY) > Math.abs(a - midY) ? b : a), ys[0]);
+    const stemUp = farthest > midY; // note below the middle line → stem up
+    const stemLen = 26;
+    const stemX = stemUp ? cx + 5 : cx - 5;
+    const stemY1 = stemUp ? maxY : minY;
+    const stemY2 = stemUp ? minY - stemLen : maxY + stemLen;
+    g.appendChild(svgEl("line", { x1: stemX, y1: stemY1, x2: stemX, y2: stemY2, stroke: "var(--text-primary)", "stroke-width": 1.3 }));
+    for (let f = 0; f < flags; f++) {
+      const dir = stemUp ? 1 : -1;
+      const fy = stemY2 + f * 6 * dir;
+      g.appendChild(
+        svgEl("path", {
+          d: `M ${stemX},${fy} q 8,${4 * dir} 8,${10 * dir}`,
+          fill: "none", stroke: "var(--text-primary)", "stroke-width": 1.5, "stroke-linecap": "round",
+        })
+      );
+    }
+  }
+
+  return g;
+}
+
+// Lays the slots out as one or more SVG "systems", wrapping onto the next
+// row instead of scrolling — mirrors layoutTab's wrap logic. Barlines are
+// placed purely by accumulated duration (fixed 4/4), never stored.
+function layoutStaff(block) {
+  const st = block.__staff;
+  if (!st) return;
+  const { model } = st;
+  const body = block.querySelector(".ms-body");
+  if (!body) return;
+
+  st.lastWidth = block.clientWidth;
+  body.innerHTML = "";
+  st.slotAt = [];
+
+  const avail = Math.max(STAFF_SLOT_W, (body.clientWidth || block.clientWidth) - STAFF_CLEF_W - 8);
+  const slotsPerRow = Math.max(STAFF_BEATS_PER_BAR, Math.floor(avail / STAFF_SLOT_W));
+  const total = model.slots.length;
+  const lineGap = STAFF_LINE_GAP;
+  const staffTop = STAFF_TOP_PAD;
+  const staffBottom = staffTop + 4 * lineGap;
+  const svgHeight = staffBottom + STAFF_BOTTOM_PAD;
+
+  for (let start = 0; start < total; start += slotsPerRow) {
+    const count = Math.min(slotsPerRow, total - start);
+    const width = STAFF_CLEF_W + count * STAFF_SLOT_W + 10;
+    const svg = svgEl("svg", { class: "ms-system", width, height: svgHeight, viewBox: `0 0 ${width} ${svgHeight}` });
+
+    for (let li = 0; li < 5; li++) {
+      const y = staffTop + li * lineGap;
+      svg.appendChild(svgEl("line", { x1: 0, y1: y, x2: width, y2: y, stroke: "var(--border)", "stroke-width": 1 }));
+    }
+    svg.appendChild(drawClefGlyph(model.clef, staffTop, staffBottom));
+
+    let beatAcc = 0;
+    let x = STAFF_CLEF_W;
+    for (let i = 0; i < count; i++) {
+      const idx = start + i;
+      const slot = model.slots[idx];
+      if (beatAcc === 0) {
+        svg.appendChild(svgEl("line", { x1: x, y1: staffTop, x2: x, y2: staffBottom, stroke: "var(--text-muted)", "stroke-width": 1 }));
+      }
+      const g = drawStaffSlot(slot, model.clef, x, staffTop, staffBottom, STAFF_SLOT_W, lineGap, svgHeight);
+      g.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        block.focus();
+        const rect = svg.getBoundingClientRect();
+        const clickY = e.clientY - rect.top;
+        const pitchStr = pitchFromStaffY(clickY, model.clef, staffTop, staffBottom);
+        selectStaffSlot(block, idx);
+        applyPitchToSlot(block, idx, pitchStr, e.shiftKey);
+      });
+      svg.appendChild(g);
+      st.slotAt[idx] = g;
+
+      beatAcc += STAFF_DUR_BEATS[slot.dur] || 1;
+      if (beatAcc >= STAFF_BEATS_PER_BAR) beatAcc = 0;
+      x += STAFF_SLOT_W;
+    }
+    svg.appendChild(svgEl("line", { x1: x, y1: staffTop, x2: x, y2: staffBottom, stroke: "var(--text-muted)", "stroke-width": 1 }));
+
+    body.appendChild(svg);
+  }
+
+  if (st.sel != null) st.slotAt[st.sel]?.classList.add("sel");
+}
+
+// Builds the virtual piano keyboard once per render. Click = replace the
+// selected slot's pitch; Shift-click = toggle that pitch into/out of the
+// chord — both feed through applyPitchToSlot, the same choke point
+// click-on-staff uses, so the two input styles share one cursor.
+function bindStaffKeyboard(block) {
+  const st = block.__staff;
+  const keys = document.createElement("div");
+  keys.className = "ms-keys";
+  for (const oct of STAFF_KB_OCTAVES) {
+    for (const name of CHROMATIC) {
+      const key = document.createElement("div");
+      key.className = "ms-key" + (name.includes("#") ? " black" : "");
+      const pitchStr = name + oct;
+      key.dataset.pitch = pitchStr;
+      key.title = pitchStr;
+      key.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        block.focus();
+        onStaffKeyClick(block, pitchStr, e.shiftKey);
+      });
+      keys.appendChild(key);
+    }
+  }
+  keys.hidden = !st.kbOpen;
+  block.appendChild(keys);
+  st.keyEls = Array.from(keys.querySelectorAll(".ms-key"));
+  highlightStaffKeyboard(block);
+}
+
+function highlightStaffKeyboard(block) {
+  const st = block.__staff;
+  if (!st || !st.keyEls) return;
+  const activePitches = st.sel != null ? st.model.slots[st.sel].pitches : [];
+  const active = new Set(activePitches.map((p) => pitchSemitone(parsePitch(p))));
+  for (const key of st.keyEls) {
+    key.classList.toggle("active", active.has(pitchSemitone(parsePitch(key.dataset.pitch))));
+  }
+}
+
+function onStaffKeyClick(block, pitchStr, addToChord) {
+  const st = block.__staff;
+  if (!st) return;
+  if (st.sel == null) selectStaffSlot(block, 0);
+  applyPitchToSlot(block, st.sel, pitchStr, addToChord);
+}
+
+// Shared by both input paths: plain entry replaces the slot's pitch set
+// (fast single-note entry), addToChord toggles the pitch into/out of it.
+function applyPitchToSlot(block, i, pitchStr, addToChord) {
+  const st = block.__staff;
+  if (!st) return;
+  const cur = st.model.slots[i].pitches;
+  let pitches;
+  if (addToChord) {
+    const sem = pitchSemitone(parsePitch(pitchStr));
+    const already = cur.some((p) => pitchSemitone(parsePitch(p)) === sem);
+    pitches = already ? cur.filter((p) => pitchSemitone(parsePitch(p)) !== sem) : [...cur, pitchStr];
+  } else {
+    pitches = [pitchStr];
+  }
+  setStaffSlotPitches(block, i, pitches);
+}
+
+function selectStaffSlot(block, i) {
+  const st = block.__staff;
+  if (!st) return;
+  if (st.sel != null) st.slotAt[st.sel]?.classList.remove("sel");
+  st.sel = i;
+  st.slotAt[i]?.classList.add("sel");
+  highlightStaffKeyboard(block);
+}
+
+function setStaffSlotPitches(block, i, pitches) {
+  const st = block.__staff;
+  if (!st) return;
+  st.model.slots[i].pitches = pitches;
+  block.setAttribute("data-staff", serializeStaff(st.model));
+  markDirty();
+  layoutStaff(block);
+  highlightStaffKeyboard(block);
+}
+
+function setStaffSlotDuration(block, i, dur) {
+  const st = block.__staff;
+  if (!st) return;
+  st.model.slots[i].dur = dur;
+  block.setAttribute("data-staff", serializeStaff(st.model));
+  markDirty();
+  layoutStaff(block);
+}
+
+function onStaffKeydown(e) {
+  const block = e.currentTarget;
+  const st = block.__staff;
+  if (!st) return;
+  if (st.sel == null) {
+    if (e.key.startsWith("Arrow")) {
+      selectStaffSlot(block, 0);
+      e.preventDefault();
+    }
+    return;
+  }
+  const i = st.sel;
+  const last = st.model.slots.length - 1;
+  const slot = st.model.slots[i];
+
+  if (/^[0-9]$/.test(e.key)) {
+    const digit = e.key;
+    if (digit === "0") {
+      setStaffSlotPitches(block, i, []);
+      st.durBuffer = "";
+      e.preventDefault();
+      return;
+    }
+    if (st.durBuffer === "1" && digit === "6") {
+      setStaffSlotDuration(block, i, "s");
+      st.durBuffer = "";
+    } else {
+      const map = { "1": "w", "2": "h", "4": "q", "8": "e" };
+      if (map[digit]) setStaffSlotDuration(block, i, map[digit]);
+      st.durBuffer = digit === "1" ? "1" : "";
+    }
+    e.preventDefault();
+    return;
+  }
+
+  switch (e.key) {
+    case "Backspace":
+    case "Delete":
+      setStaffSlotPitches(block, i, []);
+      break;
+    case "ArrowRight": selectStaffSlot(block, Math.min(i + 1, last)); break;
+    case "ArrowLeft": selectStaffSlot(block, Math.max(i - 1, 0)); break;
+    case "ArrowUp":
+      if (slot.pitches.length === 1) {
+        const step = pitchDiatonicIndex(parsePitch(slot.pitches[0])) + 1;
+        setStaffSlotPitches(block, i, [stepToPitchStr(step)]);
+      }
+      break;
+    case "ArrowDown":
+      if (slot.pitches.length === 1) {
+        const step = pitchDiatonicIndex(parsePitch(slot.pitches[0])) - 1;
+        setStaffSlotPitches(block, i, [stepToPitchStr(step)]);
+      }
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+}
+
 function renderAttachments() {
   const panel = $id("attachments-panel");
   const resizer = $id("attachments-resizer");
@@ -2053,6 +2635,16 @@ function isTabBlock(node) {
   );
 }
 
+// A staff-notation block persists as an empty `<div data-music="staff" data-staff="…">`,
+// mirroring the tab block above — see makeDefaultStaffModel / renderStaffBlock.
+function isStaffBlock(node) {
+  return (
+    node.nodeType === Node.ELEMENT_NODE &&
+    node.tagName.toLowerCase() === "div" &&
+    node.getAttribute("data-music") === "staff"
+  );
+}
+
 // Only http(s)/mailto and scheme-less (relative / anchor) URLs are allowed —
 // this rejects `javascript:` and other script-bearing schemes.
 function isSafeUrl(url) {
@@ -2088,9 +2680,10 @@ function sanitizeNode(parent) {
       node.remove();
       continue;
     }
-    // Music blocks store their state in data-tab; the rendered grid is disposable.
-    // Drop the children so only the empty, attribute-bearing <div> is persisted.
-    if (isTabBlock(node)) {
+    // Music blocks store their state in data-tab / data-staff; the rendered grid
+    // or staff is disposable. Drop the children so only the empty, attribute-
+    // bearing <div> is persisted.
+    if (isTabBlock(node) || isStaffBlock(node)) {
       node.textContent = "";
       continue;
     }
@@ -2106,6 +2699,7 @@ function sanitizeAttributes(el, tag) {
     if (tag === "img" && name === "data-att-id" && /^[\w-]+$/.test(attr.value)) continue;
     if (tag === "div" && name === "data-music" && /^[\w-]+$/.test(attr.value)) continue;
     if (tag === "div" && name === "data-tab" && /^[A-Za-z0-9,;]*$/.test(attr.value)) continue;
+    if (tag === "div" && name === "data-staff" && /^[tbwhqesr#A-G0-9;+]*$/.test(attr.value)) continue;
     el.removeAttribute(attr.name);
   }
   if (tag === "img" && keepWidth && /^\d+(\.\d+)?px$/.test(keepWidth)) {
@@ -2143,6 +2737,10 @@ function serializeMdNode(node, imgRelPaths) {
   if (isTabBlock(node)) {
     const ascii = tabToAscii(parseTab(node.getAttribute("data-tab")));
     return ascii ? "```\n" + ascii + "\n```\n\n" : "";
+  }
+  if (isStaffBlock(node)) {
+    const text = staffToText(parseStaff(node.getAttribute("data-staff")));
+    return text ? "```\n" + text + "\n```\n\n" : "";
   }
   const inner = () => serializeMdChildren(node, imgRelPaths);
   switch (tag) {
@@ -2187,6 +2785,7 @@ function setEditorContent(html, attachments) {
   editor.innerHTML = sanitizeHtml(html || "");
   hydrateEditorImages(attachments);
   hydrateTabBlocks();
+  hydrateStaffBlocks();
   updateEditorEmptyState();
 }
 
@@ -2371,6 +2970,7 @@ function applyFormatCommand(cmd) {
     case "quote": toggleBlockFormat("blockquote"); break;
     case "link": insertLink(); break;
     case "tab": insertTabBlock(); break;
+    case "staff": insertStaffBlock(); break;
   }
 
   markDirty();
