@@ -231,10 +231,15 @@ jobs:
           path: assets
           merge-multiple: true
 
+      # Artifacts keep their directory layout (e.g. the NSIS installer lands in
+      # assets/src-tauri/target/release/bundle/nsis/), so collect only the files.
       - name: List assets
-        run: ls -la assets
+        run: find assets -type f -exec ls -la {} +
 
       - name: Upload assets to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          mapfile -t files < <(find assets -type f \( -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.flatpak' \) | sort -u)
+          printf '%s\n' "${files[@]}"
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
