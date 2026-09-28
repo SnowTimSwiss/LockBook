@@ -3,20 +3,29 @@ name: Build and Release Packages
 on:
   release:
     types: [published]
+  # Manual re-run for an existing release, e.g. to backfill missing assets.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and upload assets for (e.g. v2.1.1)"
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
   build-linux:
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -63,18 +72,22 @@ jobs:
         run: find src-tauri/target/release/bundle -maxdepth 2 -type f
 
       - name: Upload Linux Assets
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: linux
+          if-no-files-found: error
+          path: |
             src-tauri/target/release/bundle/deb/*.deb
 
   build-windows:
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -111,25 +124,29 @@ jobs:
           if (-not (Test-Path $guiExe)) {
             throw "Could not find lockbook.exe in src-tauri\target\release"
           }
-          Copy-Item $guiExe "Lockbook-portable-${{ github.event.release.tag_name }}.exe"
+          Copy-Item $guiExe "Lockbook-portable-${{ env.RELEASE_TAG }}.exe"
 
       - name: List Windows Bundles
         run: Get-ChildItem src-tauri\target\release\bundle -Recurse -File | Select-Object FullName,Length | Format-Table -AutoSize
 
       - name: Upload Windows Assets
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            Lockbook-portable-${{ github.event.release.tag_name }}.exe
+          name: windows
+          if-no-files-found: error
+          path: |
+            Lockbook-portable-${{ env.RELEASE_TAG }}.exe
             src-tauri/target/release/bundle/nsis/*.exe
 
   build-macos:
     runs-on: macos-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -164,30 +181,60 @@ jobs:
         run: find src-tauri/target/release/bundle -maxdepth 2 -type f
 
       - name: Upload macOS Assets
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: macos
+          if-no-files-found: error
+          path: |
             src-tauri/target/release/bundle/dmg/*.dmg
 
   build-flatpak:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-48
       options: --privileged
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: Lockbook-${{ github.event.release.tag_name }}.flatpak
+          bundle: Lockbook-${{ env.RELEASE_TAG }}.flatpak
           manifest-path: flatpak/io.github.SnowTimSwiss.LockBook.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
       - name: Upload Flatpak Asset
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          files: Lockbook-${{ github.event.release.tag_name }}.flatpak
+          name: flatpak
+          if-no-files-found: error
+          path: |
+            Lockbook-${{ env.RELEASE_TAG }}.flatpak
+
+  # Upload everything from one job to the existing release. Having each build job
+  # upload on its own let action-gh-release race and create a separate release,
+  # so only the last job's files (Windows) ended up on the visible release.
+  publish:
+    needs: [build-linux, build-windows, build-macos, build-flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -la assets
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"

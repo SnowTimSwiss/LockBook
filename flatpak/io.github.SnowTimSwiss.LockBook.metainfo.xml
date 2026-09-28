@@ -20,6 +20,16 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.1.1" date="2026-09-28">
+      <description>
+        <p>Fixes the release pipeline so Linux (.deb, Flatpak) and macOS packages are attached to the release again.</p>
+      </description>
+    </release>
+    <release version="2.1.0" date="2026-09-09">
+      <description>
+        <p>Press Ctrl+L to lock the open journal.</p>
+      </description>
+    </release>
     <release version="2.0.0" date="2026-07-03">
       <description>
         <p>A big rewrite of the writing and reading experience.</p>
