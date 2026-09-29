@@ -19,8 +19,15 @@ use commands::JournalState;
 /// already set (e.g. `WEBKIT_DISABLE_DMABUF_RENDERER=0`) always wins.
 #[cfg(target_os = "linux")]
 fn apply_webkit_workarounds() {
-    let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists()
-        || std::path::Path::new("/sys/module/nvidia").exists();
+    // Checked in several places because the Flatpak sandbox does not expose all
+    // of them (`/dev/nvidiactl` is shared via `--device=dri`).
+    let nvidia = [
+        "/proc/driver/nvidia/version",
+        "/sys/module/nvidia",
+        "/dev/nvidiactl",
+    ]
+    .iter()
+    .any(|p| std::path::Path::new(p).exists());
 
     if nvidia && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
