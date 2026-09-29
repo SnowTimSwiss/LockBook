@@ -138,6 +138,19 @@ Opening a journal derives the Argon2id key once, decrypts only the index (entrie
 - **ChaCha20-Poly1305 AEAD** — every section (index and each attachment blob) is authenticated and bound to its position in the file; tampering or reordering is detected and decryption fails closed.
 - **Save-time round-trip verification** — every save is decrypted back and byte-compared before it replaces the previous file.
 
+## 🐧 Linux Troubleshooting
+
+**Window flashes up and the app closes immediately** (seen with the NVIDIA driver on Wayland, e.g. CachyOS/Arch): this is a WebKitGTK DMA-BUF renderer crash. Lockbook disables that renderer automatically when it detects the NVIDIA driver; if it still happens on your system, force it off manually:
+
+```bash
+# Flatpak
+flatpak override --user --env=WEBKIT_DISABLE_DMABUF_RENDERER=1 io.github.SnowTimSwiss.LockBook
+# Native package
+WEBKIT_DISABLE_DMABUF_RENDERER=1 lockbook
+```
+
+If that does not help, run `flatpak run io.github.SnowTimSwiss.LockBook` from a terminal and attach the output to a bug report.
+
 ## 🤝 Contributing
 
 Contributions welcome! Please open an issue or submit a PR.

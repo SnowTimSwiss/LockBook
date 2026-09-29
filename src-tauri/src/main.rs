@@ -10,7 +10,34 @@ use std::sync::Mutex;
 
 use commands::JournalState;
 
+/// Works around WebKitGTK crashing right after the window maps on some Linux
+/// setups (most notably the proprietary NVIDIA driver under Wayland, e.g. on
+/// CachyOS/Arch). There the DMA-BUF renderer fails with
+/// "Error 71 (Protocol error) dispatching to Wayland display" and takes the
+/// whole app down. Falling back to the non-DMA-BUF renderer is harmless for a
+/// text editor. Must run before GTK/WebKit is initialised. A value the user
+/// already set (e.g. `WEBKIT_DISABLE_DMABUF_RENDERER=0`) always wins.
+#[cfg(target_os = "linux")]
+fn apply_webkit_workarounds() {
+    // Checked in several places because the Flatpak sandbox does not expose all
+    // of them (`/dev/nvidiactl` is shared via `--device=dri`).
+    let nvidia = [
+        "/proc/driver/nvidia/version",
+        "/sys/module/nvidia",
+        "/dev/nvidiactl",
+    ]
+    .iter()
+    .any(|p| std::path::Path::new(p).exists());
+
+    if nvidia && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    apply_webkit_workarounds();
+
     env_logger::init();
 
     tauri::Builder::default()
