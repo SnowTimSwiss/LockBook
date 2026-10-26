@@ -34,6 +34,29 @@ fn apply_webkit_workarounds() {
     }
 }
 
+/// The titlebar is drawn by GTK3 itself (GNOME/Mutter offers no server-side
+/// decorations on Wayland), and GTK3 shows minimize/maximize/close by default
+/// instead of the user's choice. Copy GNOME's `button-layout` (e.g.
+/// "appmenu:minimize,close") so Lockbook matches the other apps. Must run after
+/// GTK is initialised, i.e. from the Tauri `setup` hook.
+#[cfg(target_os = "linux")]
+fn apply_gnome_button_layout() {
+    use gtk::gio::{self, prelude::*};
+    use gtk::prelude::*;
+
+    const SCHEMA: &str = "org.gnome.desktop.wm.preferences";
+    let has_schema = gio::SettingsSchemaSource::default()
+        .and_then(|source| source.lookup(SCHEMA, true))
+        .is_some();
+    if !has_schema {
+        return;
+    }
+    let layout = gio::Settings::new(SCHEMA).string("button-layout");
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_decoration_layout(Some(layout.as_str()));
+    }
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     apply_webkit_workarounds();
@@ -45,6 +68,11 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(JournalState(Mutex::new(None)))
+        .setup(|_app| {
+            #[cfg(target_os = "linux")]
+            apply_gnome_button_layout();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // TimENC helpers
             commands::get_timenc_info,
