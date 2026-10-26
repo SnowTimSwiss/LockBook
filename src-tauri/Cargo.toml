@@ -39,6 +39,11 @@ zeroize = { version = "1.7", features = ["derive"] }
 log = "0.4"
 env_logger = "0.10"
 
+# Linux only: used to apply GNOME's window-button layout to the GTK titlebar.
+# Same major as the gtk crate tauri/tao already pull in.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [profile.release]
 # opt-level = 3 (speed) instead of "s" (size): the app links TimENC's Argon2 KDF
 # and ChaCha20 cipher in-process, and their hot loops are dramatically slower when
